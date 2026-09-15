@@ -1,0 +1,16 @@
+services:
+  server:
+    build: .
+    ports:
+      - "8090:8090"
+    environment:
+      HARMONIA_ORIGIN: ${HARMONIA_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
+      HARMONIA_TOKEN: ${HARMONIA_TOKEN:-}
+      HARMONIA_PUBLIC_URL: ${HARMONIA_PUBLIC_URL:-http://host.docker.internal:8090}
+      HARMONIA_OWNTONE: ${HARMONIA_OWNTONE:-}
+    volumes:
+      - data:/data
+      - ${MUSIC_PATH:-./music}:/music:ro
+    restart: unless-stopped
+volumes:
+  data:
