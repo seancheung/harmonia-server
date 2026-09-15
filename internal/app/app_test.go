@@ -92,6 +92,26 @@ func TestAlbumIdentity(t *testing.T) {
 		t.Fatal("missing album normalization")
 	}
 }
+
+func TestAlbumArtistTagVariants(t *testing.T) {
+	for _, key := range []string{"album_artist", "albumartist", "album artist", "album-artist"} {
+		t.Run(key, func(t *testing.T) {
+			artist := albumArtistTag(map[string]string{key: " Album Artist "})
+			if artist != "Album Artist" {
+				t.Fatalf("album artist = %q", artist)
+			}
+			a := Track{Album: "Flow", AlbumArtist: artist, Artist: "Singer A", Year: 2023}
+			b := a
+			b.Artist = "Singer B"
+			if albumKey(a) != albumKey(b) {
+				t.Fatal("track artists must not split an album with a shared album artist")
+			}
+		})
+	}
+	if got := albumArtistTag(map[string]string{"album_artist": " ", "album artist": "Fallback"}); got != "Fallback" {
+		t.Fatalf("empty tag should allow fallback, got %q", got)
+	}
+}
 func TestFilterAndSort(t *testing.T) {
 	r := Rule{Mode: "any", Rules: []Rule{{Mode: "all", Rules: []Rule{{Field: "genre", Op: "contains", Value: "Jazz"}, {Field: "year", Op: "gte", Value: 2020}}}, {Field: "favorite", Op: "eq", Value: true}}}
 	if e := r.Validate(); e != nil {

@@ -122,6 +122,15 @@ func members(s string) []string {
 	}
 	return out
 }
+func albumArtistTag(tags map[string]string) string {
+	for _, key := range []string{"album_artist", "albumartist", "album artist", "album-artist"} {
+		if value := strings.TrimSpace(tags[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func albumKey(t Track) string {
 	a := t.AlbumArtist
 	if strings.TrimSpace(a) == "" {

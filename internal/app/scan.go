@@ -242,6 +242,10 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 				meta.AlbumID = albumKey(meta)
 				t = meta
 			}
+			if artist := albumArtistTag(t.Tags); artist != "" {
+				t.AlbumArtist = artist
+			}
+			t.AlbumID = albumKey(t)
 			t.Lyrics = localLyrics(p, t.Tags)
 			t.ModifiedAt = info.ModTime().UnixMilli()
 			t.CreatedAt = creationTime(p, info)
@@ -346,10 +350,7 @@ func (s *Scanner) probe(ctx context.Context, p string) (Track, error) {
 	t.Title = tags["title"]
 	t.Artist = tags["artist"]
 	t.Album = tags["album"]
-	t.AlbumArtist = tags["album_artist"]
-	if t.AlbumArtist == "" {
-		t.AlbumArtist = tags["albumartist"]
-	}
+	t.AlbumArtist = albumArtistTag(tags)
 	t.Genre = tags["genre"]
 	year := tags["date"]
 	if year == "" {
