@@ -264,6 +264,12 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request) {
 		}
 		rule.GainIdentity = r.URL.Query().Get("gain") + ":" + r.URL.Query().Get("preamp") + ":" + r.URL.Query().Get("protect")
 	}
+	if rule == nil {
+		// Do not rely on OS MIME registrations or sniffing for media requests.
+		if contentType := audioContentType(filepath.Ext(p)); contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+	}
 	if rule != nil {
 		var release func()
 		p, release, e = a.cache.Acquire(r.Context(), t, p, *rule, gain)
@@ -276,6 +282,14 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", mime)
 	}
 	http.ServeFile(w, r, p)
+}
+
+func audioContentType(extension string) string {
+	return map[string]string{
+		".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4",
+		".mp4": "audio/mp4", ".aac": "audio/aac", ".wav": "audio/wav",
+		".ogg": "audio/ogg", ".opus": "audio/ogg", ".aif": "audio/aiff", ".aiff": "audio/aiff",
+	}[strings.ToLower(extension)]
 }
 func ReplayGain(t Track, mode string, preamp float64, protect bool) float64 {
 	if mode == "off" || mode == "" {

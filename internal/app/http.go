@@ -128,7 +128,13 @@ func (a *App) Handler() http.Handler {
 		}()
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			valid := false
+			scheme := "http"
+			if r.TLS != nil {
+				scheme = "https"
+			}
+			// Same-origin media requests may include Origin, including through
+			// a development proxy that preserves the browser-facing Host.
+			valid := origin == scheme+"://"+r.Host
 			for _, o := range strings.Split(a.config.Origin, ",") {
 				if origin == strings.TrimSpace(o) {
 					valid = true
@@ -140,7 +146,8 @@ func (a *App) Handler() http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Range")
+			w.Header().Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		}
 		if r.Method == "OPTIONS" {
