@@ -218,7 +218,7 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 			if !exists {
 				t = Track{ID: newID(), SourceID: source.ID, Path: rel, Filename: filepath.Base(p), Folder: folderOf(rel), AddedAt: time.Now().UnixMilli()}
 			}
-			if force || !exists || t.Modified != info.ModTime().UnixNano() || t.Size != info.Size() {
+			if force || !exists || t.TagVersion < nativeTagVersion || t.Modified != info.ModTime().UnixNano() || t.Size != info.Size() {
 				meta, e := s.probe(ctx, p)
 				if e != nil {
 					s.problem(fmt.Errorf("%s: %w", rel, e))
@@ -286,6 +286,11 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 			for _, t := range found {
 				st.Tracks = append(st.Tracks, t)
 			}
+			for i := range st.Tracks {
+				if st.Tracks[i].SourceID == source.ID {
+					st.Tracks[i].AlbumID = albumKey(st.Tracks[i], st.TagSeparators)
+				}
+			}
 			return nil
 		})
 		if e != nil {
@@ -345,6 +350,11 @@ func (s *Scanner) probe(ctx context.Context, p string) (Track, error) {
 	if t.Bitrate == 0 {
 		t.Bitrate, _ = strconv.Atoi(probe.Format.Bitrate)
 	}
+	native, err := readNativeTags(p)
+	if err != nil {
+		return t, fmt.Errorf("cannot read native multi-value tags: %w", err)
+	}
+	applyNativeTags(&t, native)
 	t.Bitrate /= 1000
 	t.Duration, _ = strconv.ParseFloat(probe.Format.Duration, 64)
 	t.Title = tags["title"]

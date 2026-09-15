@@ -192,3 +192,10 @@ The Docker test stage runs `go test -race -cover ./...` and `go vet ./...` with 
 GitHub Actions tests pull requests. Pushes to `main` and `v*` tags additionally build and publish linux/amd64 and linux/arm64 images to `ghcr.io/seancheung/harmonia-server`. Copy this directory as the repository root; no root-level workspace configuration is needed.
 
 Folder views can sort files and directories by filename, filesystem modification time, or filesystem creation time. Run an incremental scan after upgrading to populate timestamps. Windows uses CreationTime; Linux uses statx birth time when supported by the filesystem. Unsupported creation times remain unknown and sort last in either direction; inode change time and library added time are not substituted.
+
+
+### Native multi-value tags
+
+The server preserves repeated Vorbis Comment fields in native FLAC and Ogg Vorbis/Opus files, and null-separated ID3v2.4 text values in MP3 files. Values are exposed as arrays in `tagValues`; existing text fields remain available as semicolon-separated display values for compatible grouping, search and clients. Artist, album artist and genre values are split first at native boundaries, then at semicolons and any extra characters configured in server settings. A slash inside a native value is preserved unless `/` is configured.
+
+The next ordinary library scan rereads metadata created by older versions once, preserving track IDs, favorites and play counts. Music files are not modified. Other tag formats continue to use ffprobe metadata; encrypted ID3 text frames or malformed native metadata produce a scan error and retain the previous library entry. Native metadata reads are bounded to 64 MiB.

@@ -609,7 +609,7 @@ func TestFilesystemTimesRefreshWithoutMetadataProbe(t *testing.T) {
 	}
 	_ = a.store.Update(func(st *State) error {
 		st.Sources = []Source{{ID: "s", Path: root}}
-		st.Tracks = []Track{{ID: "t", SourceID: "s", Path: "track.mp3", Modified: info.ModTime().UnixNano(), Size: info.Size(), Revision: "unchanged"}}
+		st.Tracks = []Track{{ID: "t", SourceID: "s", Path: "track.mp3", Modified: info.ModTime().UnixNano(), Size: info.Size(), Revision: "unchanged", TagVersion: nativeTagVersion}}
 		return nil
 	})
 	a.scanner.run(context.Background(), false)

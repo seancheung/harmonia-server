@@ -27,43 +27,45 @@ type FileTimes struct {
 	CreatedAt  int64 `json:"createdAt"`
 }
 type Track struct {
-	ModifiedAt      int64             `json:"modifiedAt"`
-	CreatedAt       int64             `json:"createdAt"`
-	ID              string            `json:"id"`
-	SourceID        string            `json:"sourceId"`
-	Path            string            `json:"path"`
-	Filename        string            `json:"filename"`
-	Folder          string            `json:"folder"`
-	Title           string            `json:"title"`
-	Artist          string            `json:"artist"`
-	Album           string            `json:"album"`
-	AlbumArtist     string            `json:"albumArtist"`
-	AlbumID         string            `json:"albumId"`
-	Genre           string            `json:"genre"`
-	Year            int               `json:"year"`
-	Disc            int               `json:"disc"`
-	Number          int               `json:"number"`
-	Duration        float64           `json:"duration"`
-	Bitrate         int               `json:"bitrate"`
-	SampleRate      int               `json:"sampleRate"`
-	Format          string            `json:"format"`
-	AddedAt         int64             `json:"addedAt"`
-	Modified        int64             `json:"modified"`
-	Size            int64             `json:"size"`
-	Revision        string            `json:"revision"`
-	Favorite        bool              `json:"favorite"`
-	PlayCount       int               `json:"playCount"`
-	LastPlayed      int64             `json:"lastPlayed"`
-	Missing         bool              `json:"missing"`
-	Cover           string            `json:"cover"`
-	HasCover        bool              `json:"hasCover"`
-	ArtworkRevision string            `json:"artworkRevision"`
-	Lyrics          string            `json:"lyrics"`
-	Tags            map[string]string `json:"tags"`
-	TrackGain       *float64          `json:"trackGain"`
-	AlbumGain       *float64          `json:"albumGain"`
-	TrackPeak       *float64          `json:"trackPeak"`
-	AlbumPeak       *float64          `json:"albumPeak"`
+	ModifiedAt      int64               `json:"modifiedAt"`
+	CreatedAt       int64               `json:"createdAt"`
+	ID              string              `json:"id"`
+	SourceID        string              `json:"sourceId"`
+	Path            string              `json:"path"`
+	Filename        string              `json:"filename"`
+	Folder          string              `json:"folder"`
+	Title           string              `json:"title"`
+	Artist          string              `json:"artist"`
+	Album           string              `json:"album"`
+	AlbumArtist     string              `json:"albumArtist"`
+	AlbumID         string              `json:"albumId"`
+	Genre           string              `json:"genre"`
+	Year            int                 `json:"year"`
+	Disc            int                 `json:"disc"`
+	Number          int                 `json:"number"`
+	Duration        float64             `json:"duration"`
+	Bitrate         int                 `json:"bitrate"`
+	SampleRate      int                 `json:"sampleRate"`
+	Format          string              `json:"format"`
+	AddedAt         int64               `json:"addedAt"`
+	Modified        int64               `json:"modified"`
+	Size            int64               `json:"size"`
+	Revision        string              `json:"revision"`
+	Favorite        bool                `json:"favorite"`
+	PlayCount       int                 `json:"playCount"`
+	LastPlayed      int64               `json:"lastPlayed"`
+	Missing         bool                `json:"missing"`
+	Cover           string              `json:"cover"`
+	HasCover        bool                `json:"hasCover"`
+	ArtworkRevision string              `json:"artworkRevision"`
+	Lyrics          string              `json:"lyrics"`
+	Tags            map[string]string   `json:"tags"`
+	TagValues       map[string][]string `json:"tagValues,omitempty"`
+	TagVersion      int                 `json:"tagVersion,omitempty"`
+	TrackGain       *float64            `json:"trackGain"`
+	AlbumGain       *float64            `json:"albumGain"`
+	TrackPeak       *float64            `json:"trackPeak"`
+	AlbumPeak       *float64            `json:"albumPeak"`
 }
 type Rule struct {
 	Mode      string `json:"mode,omitempty"`
@@ -101,19 +103,21 @@ type RuleSet struct {
 	Rules []Conversion `json:"rules"`
 }
 type State struct {
-	Sources    []Source        `json:"sources"`
-	Tracks     []Track         `json:"tracks"`
-	Playlists  []Playlist      `json:"playlists"`
-	RuleSets   []RuleSet       `json:"ruleSets"`
-	CacheLimit int64           `json:"cacheLimit"`
-	Sessions   map[string]bool `json:"sessions"`
+	Sources       []Source        `json:"sources"`
+	Tracks        []Track         `json:"tracks"`
+	Playlists     []Playlist      `json:"playlists"`
+	RuleSets      []RuleSet       `json:"ruleSets"`
+	CacheLimit    int64           `json:"cacheLimit"`
+	TagSeparators string          `json:"tagSeparators"`
+	Sessions      map[string]bool `json:"sessions"`
 }
 
 func newID() string { b := make([]byte, 16); _, _ = rand.Read(b); return hex.EncodeToString(b) }
-func members(s string) []string {
+func members(s string, extra ...string) []string {
+	separators := ";" + strings.Join(extra, "")
 	out := []string{}
 	seen := map[string]bool{}
-	for _, v := range strings.Split(s, ";") {
+	for _, v := range strings.FieldsFunc(s, func(r rune) bool { return strings.ContainsRune(separators, r) }) {
 		v = strings.TrimSpace(v)
 		if v != "" && !seen[strings.ToLower(v)] {
 			out = append(out, v)
@@ -131,12 +135,12 @@ func albumArtistTag(tags map[string]string) string {
 	return ""
 }
 
-func albumKey(t Track) string {
+func albumKey(t Track, extra ...string) string {
 	a := t.AlbumArtist
 	if strings.TrimSpace(a) == "" {
 		a = t.Artist
 	}
-	m := members(strings.ToLower(a))
+	m := members(strings.ToLower(a), extra...)
 	if len(m) == 0 {
 		m = []string{"unknown artist"}
 	}

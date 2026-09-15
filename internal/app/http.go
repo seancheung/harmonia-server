@@ -112,6 +112,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("GET /api/cache", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, a.cache.Status()) })
 	m.HandleFunc("DELETE /api/cache", func(w http.ResponseWriter, r *http.Request) { a.cache.Clear(); respond(w, 200, a.cache.Status()) })
 	m.HandleFunc("PUT /api/cache", a.cacheSettings)
+	m.HandleFunc("PUT /api/tag-settings", a.tagSettings)
 	m.HandleFunc("POST /api/rule-sets", a.ruleSets)
 	m.HandleFunc("PUT /api/rule-sets/{id}", a.ruleSets)
 	m.HandleFunc("DELETE /api/rule-sets/{id}", a.ruleSets)
