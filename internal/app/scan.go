@@ -24,6 +24,8 @@ import (
 
 type ScanStatus struct {
 	Running    bool     `json:"running"`
+	Stopping   bool     `json:"stopping"`
+	Cancelled  bool     `json:"cancelled"`
 	Processed  int      `json:"processed"`
 	Total      int      `json:"total"`
 	Errors     []string `json:"errors"`
@@ -130,10 +132,21 @@ func (s *Scanner) problem(e error) {
 	s.status.Errors = append(s.status.Errors, e.Error())
 	s.mu.Unlock()
 }
+func (s *Scanner) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status.Running && s.cancel != nil {
+		s.status.Stopping = true
+		s.cancel()
+	}
+}
 func (s *Scanner) run(ctx context.Context, force bool) {
 	defer func() {
 		s.mu.Lock()
 		s.status.Running = false
+		s.status.Stopping = false
+		s.status.Cancelled = ctx.Err() != nil
+		s.cancel = nil
 		s.status.FinishedAt = time.Now().UnixMilli()
 		s.mu.Unlock()
 	}()
@@ -149,6 +162,9 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 			walkRoot = resolved
 		}
 		err := filepath.WalkDir(walkRoot, func(p string, d fs.DirEntry, e error) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if e != nil {
 				return e
 			}
@@ -178,6 +194,9 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 			}
 			return ctx.Err()
 		})
+		if ctx.Err() != nil {
+			return
+		}
 		if err != nil {
 			s.problem(fmt.Errorf("%s: %w", source.Name, err))
 			_ = s.store.Update(func(st *State) error {
@@ -220,6 +239,9 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 			}
 			if force || !exists || t.TagVersion < nativeTagVersion || t.Modified != info.ModTime().UnixNano() || t.Size != info.Size() {
 				meta, e := s.probe(ctx, p)
+				if ctx.Err() != nil {
+					return
+				}
 				if e != nil {
 					s.problem(fmt.Errorf("%s: %w", rel, e))
 					if exists {
@@ -256,6 +278,9 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 			s.mu.Unlock()
 		}
 		e := s.store.Update(func(st *State) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			present := false
 			for i := range st.Sources {
 				if st.Sources[i].ID == source.ID {
@@ -293,6 +318,9 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 			}
 			return nil
 		})
+		if ctx.Err() != nil {
+			return
+		}
 		if e != nil {
 			s.problem(e)
 		}
@@ -439,6 +467,9 @@ func (s *Scanner) refreshCovers(ctx context.Context) {
 	covers := map[string]string{}
 	artworkRevisions := map[string]string{}
 	for id, tracks := range albums {
+		if ctx.Err() != nil {
+			return
+		}
 		sort.Slice(tracks, func(i, j int) bool {
 			a, b := tracks[i], tracks[j]
 			if a.Disc != b.Disc {
@@ -464,6 +495,9 @@ func (s *Scanner) refreshCovers(ctx context.Context) {
 		checked := map[string]bool{}
 		cover := ""
 		for _, t := range tracks {
+			if ctx.Err() != nil {
+				return
+			}
 			dir := filepath.Join(sources[t.SourceID], filepath.FromSlash(t.Folder))
 			if checked[dir] {
 				continue
@@ -492,6 +526,9 @@ func (s *Scanner) refreshCovers(ctx context.Context) {
 		}
 		if cover == "" {
 			for _, t := range tracks {
+				if ctx.Err() != nil {
+					return
+				}
 				p := filepath.Join(s.artDir, t.ID+"-"+t.Revision+".jpg")
 				if validArtwork(p) {
 					cover = p
@@ -513,6 +550,9 @@ func (s *Scanner) refreshCovers(ctx context.Context) {
 		}
 	}
 	if e := s.store.Update(func(st *State) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		for i := range st.Tracks {
 			if !st.Tracks[i].Missing {
 				st.Tracks[i].Cover = covers[st.Tracks[i].AlbumID]
@@ -522,7 +562,9 @@ func (s *Scanner) refreshCovers(ctx context.Context) {
 		}
 		return nil
 	}); e != nil {
-		s.problem(e)
+		if ctx.Err() == nil {
+			s.problem(e)
+		}
 	}
 }
 

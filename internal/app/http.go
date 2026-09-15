@@ -92,6 +92,10 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("PUT /api/sources/{id}", a.sources)
 	m.HandleFunc("DELETE /api/sources/{id}", a.sources)
 	m.HandleFunc("GET /api/scan", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, a.scanner.Status()) })
+	m.HandleFunc("DELETE /api/scan", func(w http.ResponseWriter, r *http.Request) {
+		a.scanner.Stop()
+		respond(w, 202, a.scanner.Status())
+	})
 	m.HandleFunc("POST /api/scan", func(w http.ResponseWriter, r *http.Request) {
 		if !a.scanner.Start(r.URL.Query().Get("force") == "true") {
 			respond(w, 409, map[string]string{"error": "scan already running"})
