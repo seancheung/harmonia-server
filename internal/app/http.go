@@ -26,11 +26,12 @@ func ConfigFromEnv() Config {
 }
 
 type App struct {
-	config  Config
-	store   *Store
-	scanner *Scanner
-	cache   *Cache
-	remote  *Remote
+	config       Config
+	store        *Store
+	scanner      *Scanner
+	cache        *Cache
+	remote       *Remote
+	waveformSlot chan struct{}
 }
 
 func New(c Config) (*App, error) {
@@ -49,7 +50,7 @@ func New(c Config) (*App, error) {
 		s.Close()
 		return nil, e
 	}
-	a := &App{config: c, store: s}
+	a := &App{config: c, store: s, waveformSlot: make(chan struct{}, 1)}
 	a.scanner = &Scanner{store: s, ffprobe: c.FFprobe, ffmpeg: c.FFmpeg, artDir: art}
 	a.cache = NewCache(c.CacheDir, c.FFmpeg, s)
 	a.remote = NewRemote(a)
@@ -112,6 +113,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /api/playlists/{id}/items", a.playlistItems)
 	m.HandleFunc("GET /api/tracks/{id}/stream", a.stream)
 	m.HandleFunc("GET /api/tracks/{id}/cover", a.cover)
+	m.HandleFunc("GET /api/tracks/{id}/waveform", a.waveform)
 	m.HandleFunc("GET /api/tracks/{id}/lyrics", a.lyrics)
 	m.HandleFunc("GET /api/cache", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, a.cache.Status()) })
 	m.HandleFunc("DELETE /api/cache", func(w http.ResponseWriter, r *http.Request) { a.cache.Clear(); respond(w, 200, a.cache.Status()) })
@@ -300,6 +302,13 @@ func (a *App) sources(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	e := a.store.Update(func(st *State) error {
+		if r.Method != "DELETE" {
+			for _, existing := range st.Sources {
+				if existing.ID != id && strings.EqualFold(strings.TrimSpace(existing.Name), src.Name) {
+					return errors.New("sourceNameExists")
+				}
+			}
+		}
 		if r.Method == "POST" {
 			for _, s := range st.Sources {
 				if s.Path == src.Path {
