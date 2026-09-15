@@ -10,9 +10,8 @@ RUN apk add --no-cache ffmpeg build-base
 RUN go test -race -cover ./... && go vet ./...
 
 FROM alpine:3.23
-RUN apk add --no-cache ffmpeg ca-certificates tzdata && addgroup -g 10001 harmonia && adduser -D -u 10001 -G harmonia harmonia && mkdir /data && chown harmonia:harmonia /data
+RUN apk add --no-cache ffmpeg ca-certificates tzdata && mkdir /data
 COPY --from=build /harmonia /usr/local/bin/harmonia
-USER harmonia
 ENV HARMONIA_DATA=/data HARMONIA_LISTEN=:8090
 VOLUME ["/data"]
 EXPOSE 8090
