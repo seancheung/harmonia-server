@@ -369,9 +369,10 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 	case "local", "pause", "play", "next", "previous":
 		action := b.Action
 		if action == "local" {
-			action = "pause"
+			e = r.pauseForLocal()
+		} else {
+			_, e = r.call("PUT", "player/"+action, nil)
 		}
-		_, e = r.call("PUT", "player/"+action, nil)
 		if b.Action == "local" && e == nil {
 			r.mu.Lock()
 			r.deadline = 0
