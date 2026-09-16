@@ -715,3 +715,29 @@ func TestEmbeddedLyrics(t *testing.T) {
 		t.Fatalf("%d: %s", res.Code, res.Body.String())
 	}
 }
+
+func TestEmptyRules(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		track Track
+		empty bool
+	}{
+		{"genre", Track{Genre: "  "}, true}, {"genre", Track{Genre: "Jazz"}, false},
+		{"year", Track{}, true}, {"playCount", Track{}, false}, {"favorite", Track{}, false},
+		{"path", Track{}, true}, {"bpm", Track{}, true}, {"tag:comment", Track{}, true},
+	} {
+		for _, op := range []string{"isEmpty", "isNotEmpty"} {
+			rule := Rule{Field: tc.field, Op: op}
+			if err := rule.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			want := tc.empty
+			if op == "isNotEmpty" {
+				want = !want
+			}
+			if rule.Match(tc.track) != want {
+				t.Fatalf("%s %s", tc.field, op)
+			}
+		}
+	}
+}

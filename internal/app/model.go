@@ -270,6 +270,13 @@ func (r Rule) Match(t Track) bool {
 		}
 		return r.Mode == "all"
 	}
+	if r.Op == "isEmpty" || r.Op == "isNotEmpty" {
+		empty := missing(value(t, r.Field), r.Field)
+		if r.Op == "isEmpty" {
+			return empty
+		}
+		return !empty
+	}
 	if r.Field == "path" {
 		return compare(value(t, r.Field), strings.ReplaceAll(fmt.Sprint(r.Value), "\\", "/"), r.Op)
 	}
@@ -299,6 +306,9 @@ func (r Rule) Validate() error {
 			return nil
 		}
 		if r.Field == "path" {
+			if r.Op == "isEmpty" || r.Op == "isNotEmpty" {
+				return nil
+			}
 			v, ok := r.Value.(string)
 			if !ok || v == "" || !strings.Contains("|contains|notContains|eq|ne|", "|"+r.Op+"|") {
 				return fmt.Errorf("invalid file path rule")
@@ -309,6 +319,9 @@ func (r Rule) Validate() error {
 			return fmt.Errorf("unknown rule field")
 		}
 		if !strings.Contains("|contains|notContains|eq|ne|gt|gte|lt|lte|", "|"+r.Op+"|") {
+			if (r.Op == "isEmpty" || r.Op == "isNotEmpty") && r.Field != "tag:" {
+				return nil
+			}
 			return fmt.Errorf("invalid operator")
 		}
 		if strings.Contains("|year|duration|playCount|addedAt|disc|number|bitrate|sampleRate|bpm|", "|"+r.Field+"|") {
