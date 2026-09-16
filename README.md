@@ -113,6 +113,8 @@ go run ./cmd/harmonia
 
 The default API is `http://localhost:8090/api`. SQLite, extracted artwork, completed transcodes and remote playback state live under `./data`.
 
+Run from the `harmonia-server` directory to automatically load its optional `.env` file at startup. Existing process environment variables take precedence, including explicitly empty values. The file supports literal `KEY=VALUE` entries, optional single/double quotes, comments, and an optional `export` prefix; shell expansion is not performed. Restart `go run ./cmd/harmonia` after editing it. Docker Compose users must run `docker compose up -d` to apply changed environment settings; `docker compose restart` retains the old container environment.
+
 ## Configuration
 
 | Environment variable | Default | Purpose |
@@ -158,7 +160,7 @@ The persistent cache defaults to 5 GiB and evicts least-recently-used inactive e
 
 ## AirPlay through OwnTone
 
-Queue additions use batches of at most 20 URLs and a 6,000-character encoded request target. Queue reads use pages of 100 items. Replacing a queue snapshots the existing OwnTone items and playback position before clearing; failed additions attempt to remove partial batches and restore the previous queue and position. Recovery errors are reported explicitly when OwnTone remains unavailable. Queue commands are serialized with background polling. Remote status responses include full queue metadata only when the client's queue version differs (clients without a version still receive the full queue).
+Queue additions submit one URL at a time with a two-minute timeout per item and a 6,000-character encoded request target. Playback starts as soon as the selected item is added, while later items continue loading; the initial seek is applied at that point. Queue reads use pages of 100 items. Replacing a queue snapshots the existing OwnTone items and playback position before clearing; confirmed failed additions attempt to remove partial batches and restore the previous queue and position. Lost or timed-out add responses leave the queue untouched because OwnTone may still be processing the request; check OwnTone before retrying. Recovery errors are reported explicitly when OwnTone remains unavailable. Queue commands are serialized with background polling. Remote status responses include full queue metadata only when the client's queue version differs (clients without a version still receive the full queue).
 
 Harmonia uses the [OwnTone JSON API](https://owntone.github.io/owntone-server/json-api/) for device discovery, PIN pairing, multiple outputs and independent device playback. OwnTone must run on a system and network capable of discovering the speakers. Windows Chrome does not need native AirPlay support.
 

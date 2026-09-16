@@ -83,18 +83,38 @@ func (r *Remote) call(method, path string, body any) (map[string]any, error) {
 		return nil, e
 	}
 	req.Header.Set("Content-Type", "application/json")
-	res, e := r.client.Do(req)
+	client := r.client
+	adding := method == "POST" && strings.HasPrefix(path, "queue/items/add?")
+	if adding {
+		// OwnTone probes each URL, which can require a cold full-track transcode.
+		copy := *client
+		copy.Timeout = 2 * time.Minute
+		client = &copy
+	}
+	res, e := client.Do(req)
 	if e != nil {
+		if adding {
+			return nil, &queueOutcomeUnknown{e}
+		}
 		return nil, e
 	}
 	defer res.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 2*1024*1024))
+	b, readErr := io.ReadAll(io.LimitReader(res.Body, 2*1024*1024))
+	if readErr != nil {
+		if adding {
+			return nil, &queueOutcomeUnknown{readErr}
+		}
+		return nil, readErr
+	}
 	if res.StatusCode >= 300 {
 		return nil, fmt.Errorf("OwnTone: HTTP %d %s", res.StatusCode, string(b))
 	}
 	out := map[string]any{}
 	if len(b) > 0 {
 		if e = json.Unmarshal(b, &out); e != nil {
+			if adding {
+				return nil, &queueOutcomeUnknown{e}
+			}
 			return nil, e
 		}
 	}
@@ -254,7 +274,7 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		if e != nil {
 			break
 		}
-		e = r.replaceURLs(uris, b.Index)
+		e = r.replaceURLs(uris, b.Index, b.Position)
 		if e == nil {
 			r.mu.Lock()
 			r.saved.Queue = append([]string{}, b.IDs...)

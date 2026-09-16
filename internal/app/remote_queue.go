@@ -8,6 +8,15 @@ import (
 	"strings"
 )
 
+// A lost response does not cancel OwnTone's work. Never roll back while it may
+// still be adding items, and never retry a non-idempotent add automatically.
+type queueOutcomeUnknown struct{ cause error }
+
+func (e *queueOutcomeUnknown) Error() string {
+	return "AirPlay queue outcome unknown; OwnTone may still be adding tracks: " + e.cause.Error()
+}
+func (e *queueOutcomeUnknown) Unwrap() error { return e.cause }
+
 // Fetch bounded pages rather than decoding an unbounded metadata response.
 func (r *Remote) queueItems() ([]any, error) {
 	items := []any{}
@@ -30,7 +39,7 @@ func queueBatches(uris []string, position int) ([]string, error) {
 	for start := 0; start < len(uris); {
 		end := start
 		path := ""
-		for end < len(uris) && end-start < 20 {
+		for end < len(uris) && end-start < 1 {
 			q := url.Values{"uris": {strings.Join(uris[start:end+1], ",")}, "position": {strconv.Itoa(position + start)}}
 			candidate := "queue/items/add?" + q.Encode()
 			if len(candidate) > 6000 {
@@ -49,6 +58,10 @@ func queueBatches(uris []string, position int) ([]string, error) {
 }
 
 func (r *Remote) addBatches(uris []string, position int) error {
+	return r.addBatchesWithProgress(uris, position, nil)
+}
+
+func (r *Remote) addBatchesWithProgress(uris []string, position int, progress func(int) error) error {
 	paths, err := queueBatches(uris, position)
 	if err != nil || len(paths) == 0 {
 		return err
@@ -65,6 +78,7 @@ func (r *Remote) addBatches(uris []string, position int) error {
 			}
 		}
 	}
+	added := 0
 	for _, path := range paths {
 		result, callErr := r.call("POST", path, nil)
 		if callErr == nil {
@@ -75,7 +89,10 @@ func (r *Remote) addBatches(uris []string, position int) error {
 			}
 		}
 		if callErr != nil {
-			// Inspect after an ambiguous timeout too: the request may have succeeded.
+			var unknown *queueOutcomeUnknown
+			if errors.As(callErr, &unknown) {
+				return callErr
+			}
 			after, readErr := r.queueItems()
 			if readErr != nil {
 				return errors.Join(callErr, fmt.Errorf("queue recovery: %w", readErr))
@@ -90,11 +107,18 @@ func (r *Remote) addBatches(uris []string, position int) error {
 			}
 			return callErr
 		}
+		query, _ := url.ParseQuery(strings.SplitN(path, "?", 2)[1])
+		added += len(strings.Split(query.Get("uris"), ","))
+		if progress != nil {
+			if err := progress(added); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-func (r *Remote) replaceURLs(uris []string, index int) error {
+func (r *Remote) replaceURLs(uris []string, index int, positionMS ...int) error {
 	// Validate all batches and capture a recoverable snapshot before clearing.
 	if _, err := queueBatches(uris, 0); err != nil {
 		return err
@@ -124,13 +148,25 @@ func (r *Remote) replaceURLs(uris []string, index int) error {
 		}
 	}
 	if _, err = r.call("PUT", "queue/clear", nil); err == nil {
-		err = r.addBatches(uris, 0)
-		if err == nil {
-			_, err = r.call("PUT", "player/play?position="+strconv.Itoa(index), nil)
-		}
+		started := false
+		err = r.addBatchesWithProgress(uris, 0, func(added int) error {
+			if started || added <= index {
+				return nil
+			}
+			_, playErr := r.call("PUT", "player/play?position="+strconv.Itoa(index), nil)
+			if playErr == nil && len(positionMS) > 0 && positionMS[0] > 0 {
+				_, playErr = r.call("PUT", fmt.Sprintf("player/seek?position_ms=%d", positionMS[0]), nil)
+			}
+			started = playErr == nil
+			return playErr
+		})
 	}
 	if err == nil {
 		return nil
+	}
+	var unknown *queueOutcomeUnknown
+	if errors.As(err, &unknown) {
+		return err
 	}
 	_, recovery := r.call("PUT", "queue/clear", nil)
 	if recovery == nil {

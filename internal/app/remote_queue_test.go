@@ -1,8 +1,11 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +14,39 @@ import (
 	"strings"
 	"testing"
 )
+
+type queueTransport func(*http.Request) (*http.Response, error)
+
+func (f queueTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestQueueTimeoutDoesNotRollbackOrRetry(t *testing.T) {
+	clears, adds := 0, 0
+	client := &http.Client{Transport: queueTransport(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/queue":
+			body = `{"items":[]}`
+		case "/api/player":
+		case "/api/queue/clear":
+			clears++
+		case "/api/queue/items/add":
+			adds++
+			if len(strings.Split(req.URL.Query().Get("uris"), ",")) != 1 {
+				t.Fatal("cold tracks must be submitted individually")
+			}
+			return nil, context.DeadlineExceeded
+		default:
+			t.Fatalf("unexpected recovery request: %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	})}
+	r := &Remote{app: &App{config: Config{OwnTone: "http://own"}}, client: client}
+	err := r.replaceURLs([]string{"http://track/1", "http://track/2"}, 0)
+	var unknown *queueOutcomeUnknown
+	if !errors.As(err, &unknown) || clears != 1 || adds != 1 {
+		t.Fatalf("ambiguous request was retried or rolled back: %v, clears=%d adds=%d", err, clears, adds)
+	}
+}
 
 func TestQueueBatches(t *testing.T) {
 	uris := make([]string, 1000)
@@ -96,6 +132,9 @@ func TestRemoteLargeQueueAndRecovery(t *testing.T) {
 					w.WriteHeader(204)
 				case req.URL.Path == "/api/player/play":
 					playingIndex, _ = strconv.Atoi(q.Get("position"))
+					if !fail && len(items) != playingIndex+1 {
+						t.Error("playback waited for tracks after the selected item")
+					}
 					playing = "play"
 					w.WriteHeader(204)
 				case req.URL.Path == "/api/player/seek":

@@ -12,6 +12,9 @@ import (
 )
 
 func main() {
+	if err := app.LoadEnvFile(".env"); err != nil {
+		log.Fatal(err)
+	}
 	cfg := app.ConfigFromEnv()
 	a, e := app.New(cfg)
 	if e != nil {
