@@ -17,25 +17,31 @@ import (
 )
 
 type Remote struct {
-	commands      sync.Mutex
-	mu            sync.Mutex
-	app           *App
-	client        *http.Client
-	done          chan struct{}
-	wg            sync.WaitGroup
-	deadline      int64
-	finish        bool
-	waiting       bool
-	item          float64
-	last          map[string]any
-	lastError     string
-	saved         RemoteSaved
-	statsItem     float64
-	statsSeconds  float64
-	statsSeeked   bool
-	statsCounted  bool
-	statsPrevious float64
-	statsAt       time.Time
+	commands       sync.Mutex
+	controls       sync.Mutex
+	pending        *RemoteSaved
+	cancelQueue    bool
+	holdPlayback   bool
+	repeatCommands sync.Mutex
+	persistMu      sync.Mutex
+	mu             sync.Mutex
+	app            *App
+	client         *http.Client
+	done           chan struct{}
+	wg             sync.WaitGroup
+	deadline       int64
+	finish         bool
+	waiting        bool
+	item           float64
+	last           map[string]any
+	lastError      string
+	saved          RemoteSaved
+	statsItem      float64
+	statsSeconds   float64
+	statsSeeked    bool
+	statsCounted   bool
+	statsPrevious  float64
+	statsAt        time.Time
 }
 
 type RemoteSaved struct {
@@ -133,6 +139,20 @@ func (r *Remote) loop() {
 				continue
 			}
 			if !r.commands.TryLock() {
+				// Reads must continue while a queue write waits for media probing.
+				if state, err := r.call("GET", "player", nil); err == nil {
+					r.mu.Lock()
+					r.last = state
+					if r.pending != nil {
+						for i, id := range r.pending.ItemIDs {
+							if id == state["item_id"] {
+								r.pending.Index = i
+								break
+							}
+						}
+					}
+					r.mu.Unlock()
+				}
 				continue
 			}
 			state, e := r.call("GET", "player", nil)
@@ -199,16 +219,20 @@ func (r *Remote) Outputs(w http.ResponseWriter, req *http.Request) {
 func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	data, _ := json.Marshal(r.saved.Queue)
+	saved := r.saved
+	if r.pending != nil {
+		saved = *r.pending
+	}
+	data, _ := json.Marshal(saved.Queue)
 	version := fmt.Sprintf("%x", sha256.Sum256(data))
-	result := map[string]any{"configured": r.app.config.OwnTone != "", "player": r.last, "error": r.lastError, "deadline": r.deadline, "waiting": r.waiting, "finish": r.finish, "index": r.saved.Index, "gainContext": r.saved.GainContext, "queueVersion": version}
+	result := map[string]any{"configured": r.app.config.OwnTone != "", "player": r.last, "error": r.lastError, "deadline": r.deadline, "waiting": r.waiting, "finish": r.finish, "index": saved.Index, "gainContext": saved.GainContext, "queueVersion": version}
 	if req.URL.Query().Get("queueVersion") != version {
 		tracks := []Track{}
 		byID := map[string]Track{}
 		for _, t := range r.app.store.Read().Tracks {
 			byID[t.ID] = t
 		}
-		for _, id := range r.saved.Queue {
+		for _, id := range saved.Queue {
 			if t, ok := byID[id]; ok {
 				tracks = append(tracks, t)
 			} else {
@@ -220,8 +244,6 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 	respond(w, 200, result)
 }
 func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
-	r.commands.Lock()
-	defer r.commands.Unlock()
 	var b struct {
 		Action      string   `json:"action"`
 		IDs         []string `json:"ids"`
@@ -243,6 +265,44 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 	}
 	if !decode(w, req, &b) {
 		return
+	}
+	r.mu.Lock()
+	loadingQueue := r.pending != nil
+	r.mu.Unlock()
+	if b.Action == "pause" || b.Action == "local" || b.Action == "clear" || (b.Action == "play" && loadingQueue) {
+		r.controlDuringQueue(w, b.Action)
+		return
+	}
+	// Repeat does not mutate queue membership and must remain available while
+	// OwnTone probes stream URLs during a long queue submission.
+	if b.Action == "repeat" {
+		r.repeatCommands.Lock()
+		defer r.repeatCommands.Unlock()
+		if b.Repeat != "off" && b.Repeat != "all" && b.Repeat != "single" {
+			respond(w, 502, map[string]string{"error": "invalid repeat mode"})
+			return
+		}
+		if _, err := r.call("PUT", "player/repeat?state="+b.Repeat, nil); err != nil {
+			respond(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		r.mu.Lock()
+		r.saved.Repeat = b.Repeat
+		if r.last == nil {
+			r.last = map[string]any{}
+		}
+		r.last["repeat"] = b.Repeat
+		r.mu.Unlock()
+		r.persist()
+		respond(w, 200, map[string]bool{"ok": true})
+		return
+	}
+	r.commands.Lock()
+	defer r.commands.Unlock()
+	if b.Action == "append" {
+		r.mu.Lock()
+		r.cancelQueue = false
+		r.mu.Unlock()
 	}
 	var e error
 	if b.Action == "play" || b.Action == "select" || b.Action == "next" || b.Action == "previous" || b.Action == "append" || b.Action == "move" || b.Action == "remove" {
@@ -274,7 +334,19 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		if e != nil {
 			break
 		}
+		r.mu.Lock()
+		r.cancelQueue, r.holdPlayback = false, false
+		r.pending = &RemoteSaved{Queue: append([]string{}, b.IDs...), Index: b.Index, GainContext: b.GainContext}
+		r.mu.Unlock()
 		e = r.replaceURLs(uris, b.Index, b.Position)
+		r.controls.Lock()
+		r.mu.Lock()
+		cancelled := r.cancelQueue
+		if cancelled && e == nil {
+			e = errQueueCancelled
+		}
+		r.pending = nil
+		r.mu.Unlock()
 		if e == nil {
 			r.mu.Lock()
 			r.saved.Queue = append([]string{}, b.IDs...)
@@ -292,6 +364,11 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 			r.statsSeeked = false
 			r.mu.Unlock()
 			e = r.mapQueue()
+		}
+		r.controls.Unlock()
+		if errors.Is(e, errQueueCancelled) {
+			respond(w, 200, map[string]bool{"ok": true, "cancelled": true})
+			return
 		}
 	case "select":
 		r.mu.Lock()
@@ -393,17 +470,6 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		_, e = r.call("PUT", fmt.Sprintf("player/seek?position_ms=%d", b.Position), nil)
 	case "volume":
 		_, e = r.call("PUT", fmt.Sprintf("player/volume?volume=%d", max(0, min(100, b.Volume))), nil)
-	case "repeat":
-		if b.Repeat != "off" && b.Repeat != "all" && b.Repeat != "single" {
-			e = errors.New("invalid repeat mode")
-			break
-		}
-		_, e = r.call("PUT", "player/repeat?state="+b.Repeat, nil)
-		if e == nil {
-			r.mu.Lock()
-			r.saved.Repeat = b.Repeat
-			r.mu.Unlock()
-		}
 	case "shuffle":
 		_, e = r.call("PUT", fmt.Sprintf("player/shuffle?state=%t", b.Shuffle), nil)
 	case "timer":
@@ -442,6 +508,8 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Remote) persist() {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	r.mu.Lock()
 	r.saved.Deadline = r.deadline
 	r.saved.Finish = r.finish
@@ -467,7 +535,11 @@ func (r *Remote) mapQueue() error {
 		}
 	}
 	r.mu.Lock()
-	r.saved.ItemIDs = ids
+	if r.pending != nil {
+		r.pending.ItemIDs = ids
+	} else {
+		r.saved.ItemIDs = ids
+	}
 	r.mu.Unlock()
 	return nil
 }

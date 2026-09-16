@@ -258,11 +258,13 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("output") == "airplay" {
 		preamp, _ := numeric(r.URL.Query().Get("preamp"))
 		g := ReplayGain(t, r.URL.Query().Get("gain"), math.Max(-30, math.Min(30, preamp)), r.URL.Query().Get("protect") != "false")
-		gain = &g
-		if rule == nil {
+		if rule == nil && g != 1 {
 			rule = &Conversion{Codec: "wav", OutputSampleRate: 44100}
 		}
-		rule.GainIdentity = r.URL.Query().Get("gain") + ":" + r.URL.Query().Get("preamp") + ":" + r.URL.Query().Get("protect")
+		if rule != nil {
+			gain = &g
+			rule.GainIdentity = r.URL.Query().Get("gain") + ":" + r.URL.Query().Get("preamp") + ":" + r.URL.Query().Get("protect")
+		}
 	}
 	if rule == nil {
 		// Do not rely on OS MIME registrations or sniffing for media requests.

@@ -23,6 +23,44 @@ func TestOriginalAudioMediaRequests(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			// No valid decoder is needed: these responses must serve original bytes.
+			a.cache.ffmpeg = filepath.Join(root, "ffmpeg-must-not-run")
+			for _, query := range []string{"gain=off", "gain=track", "gain=album", "gain=off&preamp=12&protect=true"} {
+				for _, method := range []string{"GET", "HEAD"} {
+					req := httptest.NewRequest(method, "/api/tracks/song/stream?output=airplay&"+query, nil)
+					if method == "GET" {
+						req.Header.Set("Range", "bytes=0-1")
+					}
+					res := httptest.NewRecorder()
+					a.Handler().ServeHTTP(res, req)
+					wantStatus, wantBody := 200, ""
+					if method == "GET" {
+						wantStatus, wantBody = 206, "01"
+					}
+					if res.Code != wantStatus || res.Body.String() != wantBody || res.Header().Get("Content-Type") != format.contentType {
+						t.Fatalf("AirPlay passthrough %s %s: %d %s", method, query, res.Code, res.Body.String())
+					}
+				}
+			}
+			gainDB := 6.0
+			if err := a.store.Update(func(st *State) error {
+				st.Tracks[0].TrackGain = &gainDB
+				st.RuleSets = []RuleSet{{ID: "convert", Rules: []Conversion{{Codec: "wav"}}}}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, query := range []string{"gain=track", "gain=off&ruleSet=convert"} {
+				res := request(t, a, "GET", "/api/tracks/song/stream?output=airplay&"+query, nil)
+				if res.Code != 422 {
+					t.Fatalf("required conversion bypassed: %s (%d)", query, res.Code)
+				}
+			}
+			// Gain and preamp cancel out: still serve the original even with tags.
+			resUnity := request(t, a, "GET", "/api/tracks/song/stream?output=airplay&gain=track&preamp=-6", nil)
+			if resUnity.Code != 200 || resUnity.Body.String() != "0123456789" {
+				t.Fatal("unity gain should bypass conversion")
+			}
 			req := httptest.NewRequest("GET", "/api/tracks/song/stream", nil)
 			req.Header.Set("Range", "bytes=0-1")
 			req.Header.Set("Origin", "http://localhost:5173")

@@ -13,7 +13,37 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRepeatWhileQueueCommandIsBusy(t *testing.T) {
+	own := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/api/player/repeat" || req.URL.Query().Get("state") != "single" {
+			t.Errorf("unexpected command: %s", req.URL)
+		}
+		w.WriteHeader(204)
+	}))
+	defer own.Close()
+	r := &Remote{app: &App{config: Config{OwnTone: own.URL, DataDir: t.TempDir()}}, client: own.Client()}
+	r.commands.Lock()
+	done := make(chan struct{})
+	w := httptest.NewRecorder()
+	go func() {
+		r.Command(w, httptest.NewRequest("POST", "/api/remote", strings.NewReader(`{"action":"repeat","repeat":"single"}`)))
+		close(done)
+	}()
+	select {
+	case <-done:
+		r.commands.Unlock()
+	case <-time.After(time.Second):
+		r.commands.Unlock()
+		<-done
+		t.Fatal("repeat blocked behind queue submission")
+	}
+	if w.Code != 200 || r.saved.Repeat != "single" || r.last["repeat"] != "single" {
+		t.Fatalf("repeat not applied: %d %s", w.Code, w.Body.String())
+	}
+}
 
 type queueTransport func(*http.Request) (*http.Response, error)
 

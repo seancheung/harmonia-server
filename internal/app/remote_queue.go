@@ -80,7 +80,13 @@ func (r *Remote) addBatchesWithProgress(uris []string, position int, progress fu
 	}
 	added := 0
 	for _, path := range paths {
+		if err := r.queueCheckpoint(); err != nil {
+			return err
+		}
 		result, callErr := r.call("POST", path, nil)
+		if err := r.queueCheckpoint(); err != nil {
+			return err
+		}
 		if callErr == nil {
 			query, _ := url.ParseQuery(strings.SplitN(path, "?", 2)[1])
 			expected := len(strings.Split(query.Get("uris"), ","))
@@ -150,6 +156,22 @@ func (r *Remote) replaceURLs(uris []string, index int, positionMS ...int) error 
 	if _, err = r.call("PUT", "queue/clear", nil); err == nil {
 		started := false
 		err = r.addBatchesWithProgress(uris, 0, func(added int) error {
+			r.controls.Lock()
+			defer r.controls.Unlock()
+			r.mu.Lock()
+			hold, cancelled, pending := r.holdPlayback, r.cancelQueue, r.pending != nil
+			r.mu.Unlock()
+			if cancelled {
+				return errQueueCancelled
+			}
+			if pending {
+				if err := r.mapQueue(); err != nil {
+					return err
+				}
+			}
+			if hold {
+				return nil
+			}
 			if started || added <= index {
 				return nil
 			}
@@ -163,6 +185,9 @@ func (r *Remote) replaceURLs(uris []string, index int, positionMS ...int) error 
 	}
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, errQueueCancelled) {
+		return err
 	}
 	var unknown *queueOutcomeUnknown
 	if errors.As(err, &unknown) {
