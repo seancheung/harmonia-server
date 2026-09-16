@@ -188,6 +188,8 @@ func value(t Track, f string) any {
 		return float64(t.SampleRate)
 	case "filename":
 		return t.Filename
+	case "path":
+		return strings.ReplaceAll(t.Path, "\\", "/")
 	case "favorite":
 		return t.Favorite
 	case "format":
@@ -268,13 +270,8 @@ func (r Rule) Match(t Track) bool {
 		}
 		return r.Mode == "all"
 	}
-	if r.Field == "folder" {
-		folder := strings.Trim(fmt.Sprint(r.Value), "/")
-		match := t.SourceID == r.SourceID && (t.Folder == folder || (r.Recursive && (folder == "" || strings.HasPrefix(t.Folder, folder+"/"))))
-		if r.Op == "ne" {
-			return !match
-		}
-		return match
+	if r.Field == "path" {
+		return compare(value(t, r.Field), strings.ReplaceAll(fmt.Sprint(r.Value), "\\", "/"), r.Op)
 	}
 	return compare(value(t, r.Field), r.Value, r.Op)
 }
@@ -301,9 +298,10 @@ func (r Rule) Validate() error {
 			}
 			return nil
 		}
-		if r.Field == "folder" {
-			if r.SourceID == "" || (r.Op != "eq" && r.Op != "ne") || strings.Contains(fmt.Sprint(r.Value), "..") {
-				return fmt.Errorf("invalid folder rule")
+		if r.Field == "path" {
+			v, ok := r.Value.(string)
+			if !ok || v == "" || !strings.Contains("|contains|notContains|eq|ne|", "|"+r.Op+"|") {
+				return fmt.Errorf("invalid file path rule")
 			}
 			return nil
 		}

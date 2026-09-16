@@ -120,9 +120,21 @@ func TestFilterAndSort(t *testing.T) {
 	if !r.Match(Track{Genre: "Jazz; Soul", Year: 2020}) || r.Match(Track{Genre: "Jazz", Year: 2019}) {
 		t.Fatal("group boundary")
 	}
-	folder := Rule{Field: "folder", Op: "eq", SourceID: "a", Value: "Jazz", Recursive: true}
-	if folder.Match(Track{SourceID: "a", Folder: "Jazz Live"}) || folder.Match(Track{SourceID: "b", Folder: "Jazz"}) || !folder.Match(Track{SourceID: "a", Folder: "Jazz/Disc 1"}) {
-		t.Fatal("folder must match source and path boundaries")
+	for _, tc := range []struct {
+		op, value string
+		want      bool
+	}{
+		{"contains", `jazz\01`, true}, {"notContains", "Rock", true},
+		{"eq", "albums/jazz/01.flac", true}, {"ne", "Albums/Jazz", true},
+		{"eq", "Albums/Jazz", false}, {"notContains", "01.flac", false},
+	} {
+		rule := Rule{Field: "path", Op: tc.op, Value: tc.value}
+		if err := rule.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if rule.Match(Track{Path: "Albums/Jazz/01.flac"}) != tc.want {
+			t.Fatalf("path rule failed: %+v", tc)
+		}
 	}
 	if (Rule{Mode: "all"}).Validate() == nil {
 		t.Fatal("empty groups must fail")
