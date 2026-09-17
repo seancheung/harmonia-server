@@ -125,6 +125,15 @@ func (r *Remote) addBatchesWithProgress(uris []string, position int, progress fu
 }
 
 func (r *Remote) replaceURLs(uris []string, index int, positionMS ...int) error {
+	r.mu.Lock()
+	if r.pending != nil && r.pending.ResumePosition == nil {
+		position := 0
+		if len(positionMS) > 0 {
+			position = positionMS[0]
+		}
+		r.pending.ResumePosition = &position
+	}
+	r.mu.Unlock()
 	// Validate all batches and capture a recoverable snapshot before clearing.
 	if _, err := queueBatches(uris, 0); err != nil {
 		return err
@@ -160,6 +169,9 @@ func (r *Remote) replaceURLs(uris []string, index int, positionMS ...int) error 
 			defer r.controls.Unlock()
 			r.mu.Lock()
 			hold, cancelled, pending := r.holdPlayback, r.cancelQueue, r.pending != nil
+			if pending && r.pending.ResumePosition == nil {
+				started = true
+			}
 			r.mu.Unlock()
 			if cancelled {
 				return errQueueCancelled
@@ -180,6 +192,13 @@ func (r *Remote) replaceURLs(uris []string, index int, positionMS ...int) error 
 				_, playErr = r.call("PUT", fmt.Sprintf("player/seek?position_ms=%d", positionMS[0]), nil)
 			}
 			started = playErr == nil
+			if started {
+				r.mu.Lock()
+				if r.pending != nil {
+					r.pending.ResumePosition = nil
+				}
+				r.mu.Unlock()
+			}
 			return playErr
 		})
 	}

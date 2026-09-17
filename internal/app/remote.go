@@ -45,19 +45,20 @@ type Remote struct {
 }
 
 type RemoteSaved struct {
-	Queue       []string  `json:"queue"`
-	ItemIDs     []float64 `json:"itemIds"`
-	Index       int       `json:"index"`
-	Deadline    int64     `json:"deadline"`
-	Finish      bool      `json:"finish"`
-	Waiting     bool      `json:"waiting"`
-	Trimmed     bool      `json:"trimmed"`
-	RuleSet     string    `json:"ruleSet"`
-	Gain        string    `json:"gain"`
-	GainContext string    `json:"gainContext"`
-	Preamp      float64   `json:"preamp"`
-	Protect     bool      `json:"protect"`
-	Repeat      string    `json:"repeat"`
+	Queue          []string  `json:"queue"`
+	ItemIDs        []float64 `json:"itemIds"`
+	Index          int       `json:"index"`
+	Deadline       int64     `json:"deadline"`
+	Finish         bool      `json:"finish"`
+	Waiting        bool      `json:"waiting"`
+	Trimmed        bool      `json:"trimmed"`
+	RuleSet        string    `json:"ruleSet"`
+	Gain           string    `json:"gain"`
+	GainContext    string    `json:"gainContext"`
+	Preamp         float64   `json:"preamp"`
+	Protect        bool      `json:"protect"`
+	Repeat         string    `json:"repeat"`
+	ResumePosition *int      `json:"resumePosition,omitempty"`
 }
 
 func NewRemote(a *App) *Remote {
@@ -143,7 +144,7 @@ func (r *Remote) loop() {
 				if state, err := r.call("GET", "player", nil); err == nil {
 					r.mu.Lock()
 					r.last = state
-					if r.pending != nil {
+					if r.pending != nil && r.pending.ResumePosition == nil {
 						for i, id := range r.pending.ItemIDs {
 							if id == state["item_id"] {
 								r.pending.Index = i
@@ -171,7 +172,7 @@ func (r *Remote) loop() {
 			stop := false
 			arm := false
 			for i, id := range r.saved.ItemIDs {
-				if id == item {
+				if id == item && r.saved.ResumePosition == nil {
 					r.saved.Index = i
 					break
 				}
@@ -225,7 +226,15 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 	}
 	data, _ := json.Marshal(saved.Queue)
 	version := fmt.Sprintf("%x", sha256.Sum256(data))
-	result := map[string]any{"configured": r.app.config.OwnTone != "", "player": r.last, "error": r.lastError, "deadline": r.deadline, "waiting": r.waiting, "finish": r.finish, "index": saved.Index, "gainContext": saved.GainContext, "queueVersion": version}
+	player := make(map[string]any, len(r.last))
+	for key, value := range r.last {
+		player[key] = value
+	}
+	if saved.ResumePosition != nil {
+		player["state"] = "pause"
+		player["item_progress_ms"] = *saved.ResumePosition
+	}
+	result := map[string]any{"configured": r.app.config.OwnTone != "", "player": player, "error": r.lastError, "deadline": r.deadline, "waiting": r.waiting, "finish": r.finish, "index": saved.Index, "gainContext": saved.GainContext, "queueVersion": version}
 	if req.URL.Query().Get("queueVersion") != version {
 		tracks := []Track{}
 		byID := map[string]Track{}
@@ -246,6 +255,7 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 	var b struct {
 		Action      string   `json:"action"`
+		Playing     *bool    `json:"playing"`
 		IDs         []string `json:"ids"`
 		Outputs     []string `json:"outputs"`
 		Index       int      `json:"index"`
@@ -335,8 +345,8 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 		r.mu.Lock()
-		r.cancelQueue, r.holdPlayback = false, false
-		r.pending = &RemoteSaved{Queue: append([]string{}, b.IDs...), Index: b.Index, GainContext: b.GainContext}
+		r.cancelQueue, r.holdPlayback = false, b.Playing != nil && !*b.Playing
+		r.pending = &RemoteSaved{Queue: append([]string{}, b.IDs...), Index: b.Index, GainContext: b.GainContext, ResumePosition: &b.Position}
 		r.mu.Unlock()
 		e = r.replaceURLs(uris, b.Index, b.Position)
 		r.controls.Lock()
@@ -345,12 +355,14 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		if cancelled && e == nil {
 			e = errQueueCancelled
 		}
+		resumePosition := r.pending.ResumePosition
 		r.pending = nil
 		r.mu.Unlock()
 		if e == nil {
 			r.mu.Lock()
 			r.saved.Queue = append([]string{}, b.IDs...)
 			r.saved.Index = b.Index
+			r.saved.ResumePosition = resumePosition
 			r.saved.RuleSet = b.RuleSet
 			r.saved.Gain = b.Gain
 			r.saved.GainContext = "track"
@@ -381,6 +393,11 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 		_, e = r.call("PUT", fmt.Sprintf("player/play?item_id=%.0f", ids[b.Index]), nil)
+		if e == nil {
+			r.mu.Lock()
+			r.saved.ResumePosition = nil
+			r.mu.Unlock()
+		}
 	case "append":
 		r.mu.Lock()
 		position := len(r.saved.Queue)
@@ -447,6 +464,8 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		action := b.Action
 		if action == "local" {
 			e = r.pauseForLocal()
+		} else if action == "play" {
+			e = r.resumePlayback()
 		} else {
 			_, e = r.call("PUT", "player/"+action, nil)
 		}
@@ -459,6 +478,7 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		}
 		if action == "next" || action == "previous" {
 			r.mu.Lock()
+			r.saved.ResumePosition = nil
 			r.waiting = false
 			r.mu.Unlock()
 		}
@@ -466,6 +486,11 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.statsSeeked = true
 		r.statsAt = time.Time{}
+		if r.saved.ResumePosition != nil {
+			r.saved.ResumePosition = &b.Position
+			r.mu.Unlock()
+			break
+		}
 		r.mu.Unlock()
 		_, e = r.call("PUT", fmt.Sprintf("player/seek?position_ms=%d", b.Position), nil)
 	case "volume":
@@ -496,7 +521,7 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		r.last = state
 		item, _ := state["item_id"].(float64)
 		for i, id := range r.saved.ItemIDs {
-			if id == item {
+			if id == item && r.saved.ResumePosition == nil {
 				r.saved.Index = i
 				break
 			}
