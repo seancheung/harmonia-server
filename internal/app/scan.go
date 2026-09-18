@@ -264,11 +264,11 @@ func (s *Scanner) run(ctx context.Context, force bool) {
 				meta.AlbumID = albumKey(meta)
 				t = meta
 			}
-			if artist := albumArtistTag(t.Tags); artist != "" {
+			if artist := albumArtistTag(tagStrings(t.Tags)); artist != "" {
 				t.AlbumArtist = artist
 			}
 			t.AlbumID = albumKey(t)
-			t.Lyrics = localLyrics(p, t.Tags)
+			t.Lyrics = localLyrics(p, tagStrings(t.Tags))
 			t.ModifiedAt = info.ModTime().UnixMilli()
 			t.CreatedAt = creationTime(p, info)
 			t.Cover = ""
@@ -358,7 +358,7 @@ func (s *Scanner) probe(ctx context.Context, p string) (Track, error) {
 	for k, v := range probe.Format.Tags {
 		tags[strings.ToLower(k)] = strings.TrimSpace(v)
 	}
-	t := Track{Tags: tags}
+	t := Track{}
 	audio := false
 	for _, stream := range probe.Streams {
 		if stream.CodecType == "audio" {
@@ -378,11 +378,13 @@ func (s *Scanner) probe(ctx context.Context, p string) (Track, error) {
 	if t.Bitrate == 0 {
 		t.Bitrate, _ = strconv.Atoi(probe.Format.Bitrate)
 	}
+	t.Tags = tagArrays(tags)
 	native, err := readNativeTags(p)
 	if err != nil {
 		return t, fmt.Errorf("cannot read native multi-value tags: %w", err)
 	}
 	applyNativeTags(&t, native)
+	tags = tagStrings(t.Tags)
 	t.Bitrate /= 1000
 	t.Duration, _ = strconv.ParseFloat(probe.Format.Duration, 64)
 	t.Title = tags["title"]
@@ -461,7 +463,8 @@ func (s *Scanner) refreshCovers(ctx context.Context) {
 	albums := map[string][]Track{}
 	for _, t := range st.Tracks {
 		if !t.Missing {
-			albums[t.AlbumID] = append(albums[t.AlbumID], t)
+			key := artworkGroup(t)
+			albums[key] = append(albums[key], t)
 		}
 	}
 	covers := map[string]string{}
@@ -555,9 +558,9 @@ func (s *Scanner) refreshCovers(ctx context.Context) {
 		}
 		for i := range st.Tracks {
 			if !st.Tracks[i].Missing {
-				st.Tracks[i].Cover = covers[st.Tracks[i].AlbumID]
-				st.Tracks[i].HasCover = covers[st.Tracks[i].AlbumID] != ""
-				st.Tracks[i].ArtworkRevision = artworkRevisions[st.Tracks[i].AlbumID]
+				st.Tracks[i].Cover = covers[artworkGroup(st.Tracks[i])]
+				st.Tracks[i].HasCover = covers[artworkGroup(st.Tracks[i])] != ""
+				st.Tracks[i].ArtworkRevision = artworkRevisions[artworkGroup(st.Tracks[i])]
 			}
 		}
 		return nil
@@ -597,4 +600,11 @@ func (s *Scanner) extractArtwork(ctx context.Context, input, output string) bool
 		_ = os.Remove(output)
 	}
 	return false
+}
+
+func artworkGroup(t Track) string {
+	if t.AlbumID != "" {
+		return t.AlbumID
+	}
+	return entityID("single", t.ID)
 }

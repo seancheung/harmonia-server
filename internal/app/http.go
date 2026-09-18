@@ -107,6 +107,14 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("PUT /api/tracks/{id}/favorite", a.favorite)
 	m.HandleFunc("POST /api/tracks/{id}/played", a.played)
 	m.HandleFunc("DELETE /api/recent", a.clearRecent)
+	m.HandleFunc("GET /api/playlists/memberships", func(w http.ResponseWriter, r *http.Request) {
+		memberships, err := a.store.SmartMemberships(r.Context())
+		if err != nil {
+			problem(w, err)
+			return
+		}
+		respond(w, 200, map[string]any{"memberships": memberships})
+	})
 	m.HandleFunc("POST /api/playlists", a.playlists)
 	m.HandleFunc("PUT /api/playlists/{id}", a.playlists)
 	m.HandleFunc("DELETE /api/playlists/{id}", a.playlists)
@@ -175,12 +183,7 @@ func (a *App) Handler() http.Handler {
 	})
 }
 func (a *App) library(w http.ResponseWriter, r *http.Request) {
-	st := a.store.Read()
-	st.Sessions = nil
-	for i := range st.Tracks {
-		st.Tracks[i].Cover = ""
-		st.Tracks[i].Lyrics = ""
-	}
+	st := a.store.Library()
 	respond(w, 200, st)
 }
 
@@ -195,70 +198,12 @@ type Query struct {
 	All        bool   `json:"all"`
 }
 
-func queryTracks(st State, q Query) ([]Track, error) {
-	tracks := []Track{}
-	if q.Rule != nil {
-		if e := q.Rule.Validate(); e != nil {
-			return nil, e
-		}
-	}
-	manual := false
-	if q.PlaylistID != "" {
-		found := false
-		for _, p := range st.Playlists {
-			if p.ID == q.PlaylistID {
-				found = true
-				if p.Smart {
-					q.Rule = p.Rule
-					q.Sort = p.Sort
-					q.Desc = p.Desc
-				} else {
-					manual = true
-					byID := map[string]Track{}
-					for _, t := range st.Tracks {
-						byID[t.ID] = t
-					}
-					for _, id := range p.Tracks {
-						if t, ok := byID[id]; ok {
-							tracks = append(tracks, t)
-						}
-					}
-				}
-				break
-			}
-		}
-		if !found {
-			return nil, errors.New("playlist not found")
-		}
-	}
-	if !manual {
-		for _, t := range st.Tracks {
-			if !t.Missing {
-				tracks = append(tracks, t)
-			}
-		}
-	}
-	out := []Track{}
-	for _, t := range tracks {
-		if q.Search != "" && !strings.Contains(strings.ToLower(strings.Join([]string{t.Title, t.Artist, t.Album, t.Genre}, " ")), strings.ToLower(q.Search)) {
-			continue
-		}
-		if q.Rule != nil && !q.Rule.Match(t) {
-			continue
-		}
-		out = append(out, t)
-	}
-	if !manual {
-		sortTracks(out, q.Sort, q.Desc)
-	}
-	return out, nil
-}
 func (a *App) query(w http.ResponseWriter, r *http.Request) {
 	var q Query
 	if !decode(w, r, &q) {
 		return
 	}
-	ts, e := queryTracks(a.store.Read(), q)
+	ts, e := a.store.QueryTracks(r.Context(), q)
 	if e != nil {
 		problem(w, e)
 		return
@@ -301,7 +246,11 @@ func (a *App) sources(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	e := a.store.Update(func(st *State) error {
+	update := a.store.UpdateMetadata
+	if r.Method == "DELETE" {
+		update = a.store.Update
+	}
+	e := update(func(st *State) error {
 		if r.Method != "DELETE" {
 			for _, existing := range st.Sources {
 				if existing.ID != id && strings.EqualFold(strings.TrimSpace(existing.Name), src.Name) {
@@ -355,15 +304,7 @@ func (a *App) favorite(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	e := a.store.Update(func(st *State) error {
-		for i := range st.Tracks {
-			if st.Tracks[i].ID == r.PathValue("id") && !st.Tracks[i].Missing {
-				st.Tracks[i].Favorite = body.Favorite
-				return nil
-			}
-		}
-		return errors.New("track unavailable")
-	})
+	e := a.store.SetFavorite(r.PathValue("id"), body.Favorite)
 	if e != nil {
 		problem(w, e)
 		return
@@ -384,30 +325,7 @@ func (a *App) played(w http.ResponseWriter, r *http.Request) {
 		problem(w, errors.New("invalid playback session"))
 		return
 	}
-	e := a.store.Update(func(st *State) error {
-		if st.Sessions == nil {
-			st.Sessions = map[string]bool{}
-		}
-		key := r.PathValue("id") + ":" + b.Session
-		if st.Sessions[key] {
-			return nil
-		}
-		for i := range st.Tracks {
-			t := &st.Tracks[i]
-			if t.ID == r.PathValue("id") && !t.Missing {
-				valid := b.Seconds >= 15 || (t.Duration > 0 && t.Duration < 15 && b.Completed && !b.Seeked && b.Seconds >= t.Duration-0.25)
-				if !valid {
-					return nil
-				}
-				t.PlayCount++
-				t.LastPlayed = time.Now().UnixMilli()
-				st.Sessions[key] = true
-				trimRecent(st)
-				return nil
-			}
-		}
-		return errors.New("track unavailable")
-	})
+	e := a.store.RecordPlayed(r.PathValue("id"), b.Session, b.Seconds, b.Completed, b.Seeked, time.Now())
 	if e != nil {
 		problem(w, e)
 		return
@@ -430,12 +348,7 @@ func trimRecent(st *State) {
 	}
 }
 func (a *App) clearRecent(w http.ResponseWriter, r *http.Request) {
-	e := a.store.Update(func(st *State) error {
-		for i := range st.Tracks {
-			st.Tracks[i].LastPlayed = 0
-		}
-		return nil
-	})
+	e := a.store.ClearRecent()
 	if e != nil {
 		problem(w, e)
 		return
@@ -468,7 +381,7 @@ func (a *App) playlists(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	e := a.store.Update(func(st *State) error {
+	e := a.store.UpdateMetadata(func(st *State) error {
 		if r.Method == "POST" {
 			p.ID = newID()
 			p.Tracks = []string{}
@@ -507,7 +420,7 @@ func (a *App) playlistItems(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &b) {
 		return
 	}
-	e := a.store.Update(func(st *State) error {
+	e := a.store.UpdateMetadata(func(st *State) error {
 		for i := range st.Playlists {
 			p := &st.Playlists[i]
 			if p.ID != r.PathValue("id") {
@@ -589,7 +502,7 @@ func (a *App) playlistItems(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]bool{"ok": true})
 }
 func (a *App) track(id string) (Track, string, error) {
-	return trackFromState(a.store.Read(), id)
+	return trackFromState(a.store.TrackState(id), id)
 }
 
 func trackFromState(st State, id string) (Track, string, error) {
@@ -661,7 +574,7 @@ func (a *App) lyrics(w http.ResponseWriter, r *http.Request) {
 	}
 	lyrics := t.Lyrics
 	if strings.TrimSpace(lyrics) == "" {
-		lyrics = embeddedLyrics(t.Tags)
+		lyrics = embeddedLyrics(tagStrings(t.Tags))
 	}
 	respond(w, 200, map[string]string{"lyrics": lyrics})
 }
@@ -676,7 +589,7 @@ func (a *App) cacheSettings(w http.ResponseWriter, r *http.Request) {
 		problem(w, errors.New("cache limit must be nonnegative"))
 		return
 	}
-	if e := a.store.Update(func(st *State) error { st.CacheLimit = b.Limit; return nil }); e != nil {
+	if e := a.store.UpdateMetadata(func(st *State) error { st.CacheLimit = b.Limit; return nil }); e != nil {
 		problem(w, e)
 		return
 	}

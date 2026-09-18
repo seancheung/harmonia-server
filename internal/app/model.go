@@ -59,8 +59,7 @@ type Track struct {
 	HasCover        bool                `json:"hasCover"`
 	ArtworkRevision string              `json:"artworkRevision"`
 	Lyrics          string              `json:"lyrics"`
-	Tags            map[string]string   `json:"tags"`
-	TagValues       map[string][]string `json:"tagValues,omitempty"`
+	Tags            map[string][]string `json:"tags"`
 	TagVersion      int                 `json:"tagVersion,omitempty"`
 	TrackGain       *float64            `json:"trackGain"`
 	AlbumGain       *float64            `json:"albumGain"`
@@ -136,22 +135,14 @@ func albumArtistTag(tags map[string]string) string {
 }
 
 func albumKey(t Track, extra ...string) string {
-	a := t.AlbumArtist
-	if strings.TrimSpace(a) == "" {
-		a = t.Artist
+	if strings.TrimSpace(t.Album) == "" {
+		return ""
 	}
-	m := members(strings.ToLower(a), extra...)
-	if len(m) == 0 {
-		m = []string{"unknown artist"}
-	}
-	sort.Strings(m)
-	name := strings.ToLower(strings.TrimSpace(t.Album))
-	if name == "" {
-		name = "unknown album"
-	}
-	b, _ := json.Marshal([]any{name, m, t.Year})
-	return hex.EncodeToString([]byte(string(b)))
+	names := albumMembers(t, strings.Join(extra, ""))
+	data, _ := json.Marshal([]any{nameKey(t.Album), t.Year, artistSetKey(names)})
+	return entityID("album", string(data))
 }
+
 func value(t Track, f string) any {
 	switch f {
 	case "title":
@@ -196,20 +187,24 @@ func value(t Track, f string) any {
 		return t.Format
 	case "bpm":
 		for _, name := range []string{"bpm", "tbpm", "tempo"} {
-			if n, ok := numeric(strings.TrimSpace(t.Tags[name])); ok && n > 0 {
-				return n
+			for _, text := range t.Tags[name] {
+				if n, ok := numeric(strings.TrimSpace(text)); ok && n > 0 {
+					return n
+				}
 			}
 		}
 		return nil
 	case "key":
 		for _, name := range []string{"initialkey", "initial_key", "tkey", "key"} {
-			if key := strings.TrimSpace(t.Tags[name]); key != "" {
-				return key
+			for _, text := range t.Tags[name] {
+				if key := strings.TrimSpace(text); key != "" {
+					return key
+				}
 			}
 		}
 		return ""
 	default:
-		return t.Tags[strings.TrimPrefix(f, "tag:")]
+		return tagText(t.Tags, strings.TrimPrefix(f, "tag:"))
 	}
 }
 func numeric(v any) (float64, bool) {
@@ -270,6 +265,36 @@ func (r Rule) Match(t Track) bool {
 		}
 		return r.Mode == "all"
 	}
+	if strings.HasPrefix(r.Field, "tag:") {
+		values := t.Tags[strings.TrimPrefix(r.Field, "tag:")]
+		if r.Op == "isEmpty" || r.Op == "isNotEmpty" {
+			empty := true
+			for _, v := range values {
+				if strings.TrimSpace(v) != "" {
+					empty = false
+					break
+				}
+			}
+			if r.Op == "isEmpty" {
+				return empty
+			}
+			return !empty
+		}
+		op := r.Op
+		negative := op == "ne" || op == "notContains"
+		if op == "ne" {
+			op = "eq"
+		}
+		if op == "notContains" {
+			op = "contains"
+		}
+		for _, v := range values {
+			if compare(v, r.Value, op) {
+				return !negative
+			}
+		}
+		return negative
+	}
 	if r.Op == "isEmpty" || r.Op == "isNotEmpty" {
 		empty := missing(value(t, r.Field), r.Field)
 		if r.Op == "isEmpty" {
@@ -314,6 +339,9 @@ func (r Rule) Validate() error {
 				return fmt.Errorf("invalid file path rule")
 			}
 			return nil
+		}
+		if r.Field == "tag:" {
+			return fmt.Errorf("tag name required")
 		}
 		if !strings.Contains("|title|artist|album|albumArtist|genre|year|duration|playCount|addedAt|disc|number|bitrate|sampleRate|bpm|key|favorite|format|", "|"+r.Field+"|") && !strings.HasPrefix(r.Field, "tag:") {
 			return fmt.Errorf("unknown rule field")
@@ -387,4 +415,22 @@ func folderOf(p string) string {
 		return ""
 	}
 	return d
+}
+
+// Flatten only at a presentation/legacy metadata-extraction boundary. The
+// canonical in-memory, API and database representation always retains arrays.
+func tagText(tags map[string][]string, key string) string { return strings.Join(tags[key], "; ") }
+func tagStrings(tags map[string][]string) map[string]string {
+	out := make(map[string]string, len(tags))
+	for key := range tags {
+		out[key] = tagText(tags, key)
+	}
+	return out
+}
+func tagArrays(tags map[string]string) map[string][]string {
+	out := make(map[string][]string, len(tags))
+	for key, value := range tags {
+		out[strings.ToLower(strings.TrimSpace(key))] = []string{strings.TrimSpace(value)}
+	}
+	return out
 }

@@ -4,6 +4,10 @@ A private, single-user music library server built with Go and SQLite. This direc
 
 Repository: [seancheung/harmonia-server](https://github.com/seancheung/harmonia-server). Companion player: [seancheung/harmonia-web-player](https://github.com/seancheung/harmonia-web-player).
 
+## Relational database reset
+
+This revision uses a new relational schema and intentionally does not migrate the previous single-row library database. Deploy with a fresh database and rescan your sources. See [DATABASE.md](DATABASE.md) for the schema, identity rules, transaction model and initialization command.
+
 ## Start with GHCR
 
 ```sh
@@ -198,7 +202,7 @@ Folder views can sort files and directories by filename, filesystem modification
 
 ### Native multi-value tags
 
-The server preserves repeated Vorbis Comment fields in native FLAC and Ogg Vorbis/Opus files, and null-separated ID3v2.4 text values in MP3 files. Values are exposed as arrays in `tagValues`; existing text fields remain available as semicolon-separated display values for compatible grouping, search and clients. Artist, album artist and genre values are split first at native boundaries, then at semicolons and any extra characters configured in server settings. A slash inside a native value is preserved unless `/` is configured.
+The server preserves repeated Vorbis Comment fields in native FLAC and Ogg Vorbis/Opus files, and null-separated ID3v2.4 text values in MP3 files. Values are exposed and stored as arrays in the single `tags` map, including single-value tags; artist/album/genre display columns remain available for grouping and search. Artist, album artist and genre values are split first at native boundaries, then at semicolons and any extra characters configured in server settings. A slash inside a native value is preserved unless `/` is configured.
 
 The next ordinary library scan rereads metadata created by older versions once, preserving track IDs, favorites and play counts. Music files are not modified. Other tag formats continue to use ffprobe metadata; encrypted ID3 text frames or malformed native metadata produce a scan error and retain the previous library entry. Native metadata reads are bounded to 64 MiB.
 

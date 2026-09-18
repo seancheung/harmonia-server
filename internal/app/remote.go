@@ -236,18 +236,7 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 	}
 	result := map[string]any{"configured": r.app.config.OwnTone != "", "player": player, "error": r.lastError, "deadline": r.deadline, "waiting": r.waiting, "finish": r.finish, "index": saved.Index, "gainContext": saved.GainContext, "queueVersion": version}
 	if req.URL.Query().Get("queueVersion") != version {
-		tracks := []Track{}
-		byID := map[string]Track{}
-		for _, t := range r.app.store.Read().Tracks {
-			byID[t.ID] = t
-		}
-		for _, id := range saved.Queue {
-			if t, ok := byID[id]; ok {
-				tracks = append(tracks, t)
-			} else {
-				tracks = append(tracks, Track{ID: id, Missing: true})
-			}
-		}
+		tracks := r.app.store.Tracks(saved.Queue)
 		result["queue"] = tracks
 	}
 	respond(w, 200, result)
@@ -688,17 +677,7 @@ func (r *Remote) countItem(item float64, now time.Time) {
 		return
 	}
 	id := r.saved.Queue[index]
-	if e := r.app.store.Update(func(st *State) error {
-		for i := range st.Tracks {
-			if st.Tracks[i].ID == id && !st.Tracks[i].Missing {
-				st.Tracks[i].PlayCount++
-				st.Tracks[i].LastPlayed = now.UnixMilli()
-				trimRecent(st)
-				break
-			}
-		}
-		return nil
-	}); e == nil {
+	if e := r.app.store.RecordPlayed(id, "", 15, false, false, now); e == nil {
 		r.statsCounted = true
 	}
 }

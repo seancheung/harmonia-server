@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-const nativeTagVersion = 1
+const nativeTagVersion = 2
 const maxNativeTags = 64 * 1024 * 1024
 
 // Keep field boundaries before ffprobe flattens repeated comments or text values.
@@ -386,12 +386,14 @@ func id3Genre(value string) string {
 }
 
 func applyNativeTags(t *Track, native map[string][]string) {
-	t.TagValues = native
-	for key, values := range native {
-		t.Tags[key] = strings.Join(values, "; ")
+	if t.Tags == nil {
+		t.Tags = map[string][]string{}
 	}
-	t.Artist = t.Tags["artist"]
-	t.AlbumArtist = albumArtistTag(t.Tags)
-	t.Genre = t.Tags["genre"]
+	for key, values := range native {
+		t.Tags[key] = append([]string{}, values...)
+	}
+	t.Artist = tagText(t.Tags, "artist")
+	t.AlbumArtist = albumArtistTag(tagStrings(t.Tags))
+	t.Genre = tagText(t.Tags, "genre")
 	t.TagVersion = nativeTagVersion
 }

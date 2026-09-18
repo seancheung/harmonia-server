@@ -2,20 +2,35 @@ package main
 
 import (
 	"context"
+	"flag"
 	"github.com/harmonia/harmonia-server/internal/app"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
 
 func main() {
+	initDB := flag.Bool("init-db", false, "initialize an empty database and exit")
+	flag.Parse()
 	if err := app.LoadEnvFile(".env"); err != nil {
 		log.Fatal(err)
 	}
 	cfg := app.ConfigFromEnv()
+	if *initDB {
+		store, err := app.OpenStore(filepath.Join(cfg.DataDir, "harmonia.sqlite"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Database initialized in %s", cfg.DataDir)
+		return
+	}
 	a, e := app.New(cfg)
 	if e != nil {
 		log.Fatal(e)

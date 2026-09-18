@@ -580,7 +580,7 @@ func TestLocalArtworkFixture(t *testing.T) {
 }
 
 func TestTempoKeyAndNotContainsFilters(t *testing.T) {
-	song := Track{Artist: "Artist One; Artist Two", Tags: map[string]string{"tbpm": "128.5", "initial_key": "F#m"}}
+	song := Track{Artist: "Artist One; Artist Two", Tags: tagArrays(map[string]string{"tbpm": "128.5", "initial_key": "F#m"})}
 	for _, c := range []struct {
 		rule Rule
 		want bool
@@ -705,7 +705,7 @@ func TestEmbeddedLyrics(t *testing.T) {
 	a := testApp(t)
 	if err := a.store.Update(func(st *State) error {
 		st.Sources = append(st.Sources, Source{ID: "lyrics-source", Path: filepath.Dir(path)})
-		st.Tracks = append(st.Tracks, Track{ID: "lyrics-track", SourceID: "lyrics-source", Path: "song.mp3", Tags: map[string]string{"lyrics-eng": "Embedded"}})
+		st.Tracks = append(st.Tracks, Track{ID: "lyrics-track", SourceID: "lyrics-source", Path: "song.mp3", Tags: tagArrays(map[string]string{"lyrics-eng": "Embedded"})})
 		return nil
 	}); err != nil {
 		t.Fatal(err)

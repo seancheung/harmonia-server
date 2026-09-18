@@ -56,7 +56,7 @@ func TestNativeFLACValues(t *testing.T) {
 	if !reflect.DeepEqual(tags["artist"], []string{"AC/DC", "Guest"}) {
 		t.Fatal(tags)
 	}
-	track := Track{Tags: map[string]string{"artist": "wrong", "genre": "wrong"}, Album: "Compilation"}
+	track := Track{Tags: tagArrays(map[string]string{"artist": "wrong", "genre": "wrong"}), Album: "Compilation"}
 	applyNativeTags(&track, tags)
 	if track.Artist != "AC/DC; Guest" || track.Genre != "Rock; Pop" || track.AlbumArtist != "Various; Guests" {
 		t.Fatal(track)
@@ -67,7 +67,7 @@ func TestNativeFLACValues(t *testing.T) {
 	if !reflect.DeepEqual(members(track.Artist, "/"), []string{"AC", "DC", "Guest"}) {
 		t.Fatal("extra separator not applied")
 	}
-	if !reflect.DeepEqual(track.TagValues["genre"], []string{"Rock", "Pop"}) {
+	if !reflect.DeepEqual(track.Tags["genre"], []string{"Rock", "Pop"}) {
 		t.Fatal("native boundaries lost")
 	}
 	other := track
@@ -136,7 +136,7 @@ func TestNativeTagScanMigration(t *testing.T) {
 	}
 	scanNow(t, a, false)
 	track := a.store.Read().Tracks[0]
-	if track.TagVersion != nativeTagVersion || len(track.TagValues["artist"]) == 0 || track.Revision == "old" {
+	if track.TagVersion != nativeTagVersion || len(track.Tags["artist"]) == 0 || track.Revision == "old" {
 		t.Fatal("existing metadata was not migrated")
 	}
 	if !track.Favorite || track.PlayCount != 8 || track.ID != "song" {

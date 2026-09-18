@@ -68,7 +68,7 @@ func (c *Cache) Status() map[string]any {
 			pending++
 		}
 	}
-	return map[string]any{"used": used, "limit": c.store.Read().CacheLimit, "pending": pending, "active": active}
+	return map[string]any{"used": used, "limit": c.store.CacheLimit(), "pending": pending, "active": active}
 }
 func (c *Cache) trimLocked(limit int64) {
 	var used int64
@@ -95,7 +95,7 @@ func (c *Cache) trimLocked(limit int64) {
 	}
 }
 func (c *Cache) Trim() {
-	limit := c.store.Read().CacheLimit
+	limit := c.store.CacheLimit()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.trimLocked(limit)
@@ -176,7 +176,7 @@ func (c *Cache) Acquire(ctx context.Context, t Track, input string, rule Convers
 		_ = os.Remove(p)
 		return "", nil, e
 	}
-	limit := c.store.Read().CacheLimit
+	limit := c.store.CacheLimit()
 	c.mu.Lock()
 	c.trimLocked(max(0, limit-info.Size()))
 	var used int64
@@ -253,7 +253,7 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request) {
 		respond(w, 404, map[string]string{"error": e.Error()})
 		return
 	}
-	rule := matched(t, a.store.Read().RuleSets, r.URL.Query().Get("ruleSet"))
+	rule := matched(t, a.store.RuleSets(), r.URL.Query().Get("ruleSet"))
 	var gain *float64
 	if r.URL.Query().Get("output") == "airplay" {
 		preamp, _ := numeric(r.URL.Query().Get("preamp"))
@@ -375,7 +375,7 @@ func (a *App) ruleSets(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	e := a.store.Update(func(st *State) error {
+	e := a.store.UpdateMetadata(func(st *State) error {
 		if r.Method == "POST" {
 			set.ID = newID()
 			st.RuleSets = append(st.RuleSets, set)
