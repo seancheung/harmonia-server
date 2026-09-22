@@ -392,13 +392,7 @@ func (s *Scanner) probe(ctx context.Context, p string) (Track, error) {
 	t.Album = tags["album"]
 	t.AlbumArtist = albumArtistTag(tags)
 	t.Genre = tags["genre"]
-	year := tags["date"]
-	if year == "" {
-		year = tags["year"]
-	}
-	if len(year) >= 4 {
-		t.Year, _ = strconv.Atoi(year[:4])
-	}
+	t.Year = tagYear(t.Tags)
 	t.Disc = parseIndex(tags["disc"])
 	t.Number = parseIndex(tags["track"])
 	t.TrackGain = tagNumber(tags["replaygain_track_gain"])
@@ -407,6 +401,35 @@ func (s *Scanner) probe(ctx context.Context, p string) (Track, error) {
 	t.AlbumPeak = tagNumber(tags["replaygain_album_peak"])
 	return t, nil
 }
+
+// Keep the complete original date in Tags; Year is its four-digit display and
+// album-identity value. Some ID3 writers retain a TYER frame containing a date.
+func tagYear(tags map[string][]string) int {
+	for _, key := range []string{"date", "year", "tyer"} {
+		for _, raw := range tags[key] {
+			text := strings.TrimSpace(raw)
+			if len(text) < 4 {
+				continue
+			}
+			digits := true
+			for _, c := range text[:4] {
+				if c < '0' || c > '9' {
+					digits = false
+					break
+				}
+			}
+			if !digits {
+				continue
+			}
+			year, _ := strconv.Atoi(text[:4])
+			if year > 0 {
+				return year
+			}
+		}
+	}
+	return 0
+}
+
 func parseIndex(s string) int { n, _ := strconv.Atoi(strings.Split(s, "/")[0]); return n }
 func tagNumber(s string) *float64 {
 	p := strings.Fields(s)

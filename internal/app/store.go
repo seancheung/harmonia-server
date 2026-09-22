@@ -70,6 +70,9 @@ func OpenStore(file string) (*Store, error) {
 			return fail(err)
 		}
 	}
+	if err = ensureSearchIndexes(db); err != nil {
+		return fail(err)
+	}
 	s := &Store{db: db, state: emptyState()}
 	if err = s.load(); err != nil {
 		return fail(err)

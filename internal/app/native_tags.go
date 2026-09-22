@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-const nativeTagVersion = 2
+const nativeTagVersion = 3
 const maxNativeTags = 64 * 1024 * 1024
 
 // Keep field boundaries before ffprobe flattens repeated comments or text values.
@@ -293,7 +293,7 @@ func readID3v24(b []byte, flags byte, tags map[string][]string) error {
 		}
 		b = b[n:]
 	}
-	names := map[string]string{"TPE1": "artist", "TPE2": "album_artist", "TCON": "genre", "TALB": "album", "TIT2": "title", "TCOM": "composer", "TPE3": "conductor", "TDRC": "date", "TRCK": "track", "TPOS": "disc", "TBPM": "bpm", "TKEY": "initialkey"}
+	names := map[string]string{"TPE1": "artist", "TPE2": "album_artist", "TCON": "genre", "TALB": "album", "TIT2": "title", "TCOM": "composer", "TPE3": "conductor", "TDRC": "date", "TYER": "tyer", "TRCK": "track", "TPOS": "disc", "TBPM": "bpm", "TKEY": "initialkey"}
 	for len(b) > 0 {
 		if b[0] == 0 {
 			return nil

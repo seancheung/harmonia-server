@@ -1,6 +1,6 @@
 # Database and update model
 
-The database is a relational SQLite database (`harmonia.sqlite`, schema version 2), not a serialized library document. The complete DDL is in [`internal/app/schema.sql`](internal/app/schema.sql).
+The database is a relational SQLite database (`harmonia.sqlite`, schema version 2), not a serialized library document. Canonical DDL is in [`internal/app/schema.sql`](internal/app/schema.sql); disposable lookup tables and indexes are defined in [`internal/app/search_schema.sql`](internal/app/search_schema.sql) and `store_search.go`.
 
 ## Entities and relationships
 
@@ -21,6 +21,8 @@ The database is a relational SQLite database (`harmonia.sqlite`, schema version 
 | `conversion_rules` | Ordered conversion rules with separate format, bitrate, sample-rate and codec columns |
 | `playback_sessions` | Durable playback-report deduplication and report time |
 | `settings` | Individual server/library settings |
+| `track_search` | Derived case-folded text, BPM/key, and stable sorting values |
+| `track_tag_index` | Derived per-value tag lookup with tag-name/value and nonempty indexes |
 
 Foreign keys enforce associations; membership rows cascade on deletion. Indexes cover albums, source/path, favorites, recent playback, play count, date added, reverse artist/genre membership and playlist membership. SQLite WAL is enabled.
 
@@ -54,15 +56,21 @@ The `*_raw` track columns preserve the original artist/album/genre labels. Entit
 
 Even a single value is an array. There is no separate `tag_values` column or `tagValues` API property. SQLite stores JSON as `TEXT` with a JSON validity/object constraint; it does not require a separate JSON column type. The scanner preserves native value boundaries and wraps ffprobe fallback values in arrays. Display strings are derived when needed.
 
-`POST /api/tracks/query` and saved smart-playlist membership both compile validated rules to parameterized SQL. Common properties (favorite, year, play count, etc.) query ordinary columns. Arbitrary `tag:*` rules use `json_each(tags)` and `json_each(tag.value)`, binding both the tag name and comparison value; no user-controlled SQL or JSON paths are interpolated. Positive tag conditions match any value; `ne` and `notContains` require no value to match. A missing array or one containing only blank strings is empty. BPM/key aliases use the first valid/nonempty value in alias and array order. Unicode case folding matches Go semantics.
+`POST /api/tracks/query` and saved smart-playlist membership both compile validated rules to parameterized SQL. Common properties (favorite, year, play count, etc.) query ordinary columns. Arbitrary `tag:*` rules query `track_tag_index`, binding both the tag name and comparison value. Equality/range queries use `(tag_name,value_key,track_id)`; empty/nonempty queries use `(tag_name,nonempty,track_id)`. No user-controlled SQL is interpolated. Positive tag conditions match any value; `ne` and `notContains` require no value to match. A missing array or one containing only blank strings is empty. BPM/key aliases use the first valid/nonempty value in alias and array order. Unicode case folding matches Go semantics.
 
-JSON querying avoids application-side decoding and matching of every track. Arbitrary JSON keys still require scanning candidate rows; they are not automatically indexed. Indexed ordinary columns narrow candidates where possible. A separate read connection pool and WAL read transactions provide consistent memberships without holding up favorite writes. HTTP cancellation cancels database work. UI-only ad hoc filters continue to run locally; saved smart playlists use the database.
+The JSON object remains the source of truth. `track_search` and `track_tag_index` are rebuildable projections, updated in the same transaction as scanned/edited track metadata and deleted through foreign-key cascades. Favorite and playback-counter updates do not rebuild them. On startup, missing structures are created and backfilled from existing schema-v2 tracks without deleting library data or requiring a rescan; subsequent starts do not reindex existing records. This is not support for the older single-row library format.
+
+BPM/key are extracted once on metadata writes. Normalized artist/album/album-artist/genre/title conditions use indexed text columns, preserving the existing whole-display-string semantics (an exact genre rule does not silently become membership in one genre). Years and playback-session foreign keys have indexes. Full sort indexes preserve empty-last ordering, ties and both directions for added date/title; unfiltered lists walk those indexes. Filtered queries let SQLite choose the selective index and may sort their smaller result. Arbitrary substring matching still scans values for the selected tag or candidate tracks; ordinary B-tree indexes do not accelerate arbitrary substring matching.
+
+`POST /api/tracks/query` executes `COUNT(*)` and `LIMIT/OFFSET` within the same read transaction; only the requested page is decoded into Track objects. Explicit `all:true` still returns everything. Manual playlists use their indexed position order. A separate read connection pool and WAL read transactions provide consistent memberships without holding up favorite writes. HTTP cancellation cancels database work. UI-only ad hoc filters continue to run locally; saved smart playlists use the database.
+
+Query-plan tests verify selective indexes and absence of temporary sorting for unfiltered common sorts. `go test ./internal/app -run '^$' -bench '^BenchmarkIndexedLibrary$' -benchmem` compares JSON scanning with tag lookup, and full-result decoding with SQL pagination, on 8,000 synthetic tracks.
 
 ## Frontend updates
 
 Favorites update immediately. Requests are ordered independently per track; the latest failed change rolls back to the last server-confirmed value. Older responses and library reloads cannot overwrite a newer pending choice.
 
-Playlist saves wait for the small durable save, then close the editor without waiting for a full library download or membership calculation. Membership is calculated by SQLite through a separate, cancellable background request to `GET /api/playlists/memberships`. Only matching track IDs are returned. Favorites trigger this refresh after their writes settle, not before the database commits. Obsolete requests are aborted and stale results are discarded. Other mutation flows schedule their library refresh in the background.
+Playlist saves wait for the small durable save, then close the editor without waiting for a full library download or membership calculation. Membership is calculated by SQLite through a separate, cancellable background request to `GET /api/playlists/memberships`. Only matching track IDs are returned. Favorites trigger this refresh after their writes settle, and only for playlists whose rules or sorting depend on favorite state. Repeated `id` query parameters select the playlists to evaluate; omission retains the full-refresh API. Changed/new playlist definitions are refreshed individually; renaming or deleting a playlist does not recompute other memberships. Library reloads still invalidate all playlists. Obsolete requests are aborted and stale results are discarded. Only successful requests acknowledge invalidations, so cancellation cannot turn an unfinished full refresh into an incomplete favorite-only refresh. Other mutation flows schedule their library refresh in the background.
 
 ## Fresh initialization
 

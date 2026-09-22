@@ -108,7 +108,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("POST /api/tracks/{id}/played", a.played)
 	m.HandleFunc("DELETE /api/recent", a.clearRecent)
 	m.HandleFunc("GET /api/playlists/memberships", func(w http.ResponseWriter, r *http.Request) {
-		memberships, err := a.store.SmartMemberships(r.Context())
+		memberships, err := a.store.SmartMemberships(r.Context(), r.URL.Query()["id"]...)
 		if err != nil {
 			problem(w, err)
 			return
@@ -203,23 +203,12 @@ func (a *App) query(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &q) {
 		return
 	}
-	ts, e := a.store.QueryTracks(r.Context(), q)
-	if e != nil {
-		problem(w, e)
+	result, err := a.store.QueryTrackPage(r.Context(), q)
+	if err != nil {
+		problem(w, err)
 		return
 	}
-	total := len(ts)
-	if !q.All {
-		if q.Page < 1 {
-			q.Page = 1
-		}
-		if q.PageSize != 25 && q.PageSize != 100 {
-			q.PageSize = 50
-		}
-		start := min((q.Page-1)*q.PageSize, total)
-		ts = ts[start:min(start+q.PageSize, total)]
-	}
-	respond(w, 200, map[string]any{"items": ts, "total": total, "page": q.Page, "pageSize": q.PageSize})
+	respond(w, 200, result)
 }
 func (a *App) sources(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

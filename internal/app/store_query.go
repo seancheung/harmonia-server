@@ -25,13 +25,6 @@ func init() {
 			}
 			return strings.TrimSpace(fmt.Sprint(v))
 		},
-		"harmonia_number": func(v any) any {
-			n, ok := numeric(strings.TrimSpace(fmt.Sprint(v)))
-			if !ok {
-				return nil
-			}
-			return n
-		},
 	} {
 		err := sqlite.RegisterDeterministicScalarFunction(name, 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) { return fn(args[0]), nil })
 		if err != nil {
@@ -44,14 +37,16 @@ func init() {
 // are bound parameters, never interpolated SQL or JSON paths.
 func fieldSQL(field string) (string, bool) {
 	switch field {
-	case "artist", "album", "albumArtist", "genre":
-		return map[string]string{"artist": "t.artist_raw", "album": "t.album_raw", "albumArtist": "t.album_artist_raw", "genre": "t.genre_raw"}[field], false
+	case "title", "artist", "album", "albumArtist", "genre", "key":
+		name := field
+		if field == "albumArtist" {
+			name = "album_artist"
+		}
+		return "x.search_" + name, false
 	case "path":
 		return `replace(t.path, '\', '/')`, false
 	case "bpm":
-		return `(SELECT harmonia_number(v.value) FROM json_each(t.tags) j, json_each(j.value) v WHERE j.key IN ('bpm','tbpm','tempo') AND harmonia_number(v.value)>0 ORDER BY CASE j.key WHEN 'bpm' THEN 0 WHEN 'tbpm' THEN 1 ELSE 2 END, v.key LIMIT 1)`, true
-	case "key":
-		return `coalesce((SELECT harmonia_trim(v.value) FROM json_each(t.tags) j, json_each(j.value) v WHERE j.key IN ('initialkey','initial_key','tkey','key') AND harmonia_trim(v.value)<>'' ORDER BY CASE j.key WHEN 'initialkey' THEN 0 WHEN 'initial_key' THEN 1 WHEN 'tkey' THEN 2 ELSE 3 END, v.key LIMIT 1),'')`, false
+		return "x.search_bpm", true
 	}
 	for _, c := range columns(Track{}) {
 		// Validate() limits rule fields; this also supports the existing sort fields.
@@ -64,6 +59,9 @@ func fieldSQL(field string) (string, bool) {
 }
 
 func emptySQL(expr, field string, number bool) string {
+	if strings.HasPrefix(expr, "x.search_") && !number {
+		return "(" + expr + "_empty=1)"
+	}
 	if number && field != "playCount" {
 		return "(" + expr + " IS NULL OR " + expr + "=0)"
 	}
@@ -73,19 +71,26 @@ func emptySQL(expr, field string, number bool) string {
 	return "(harmonia_trim(" + expr + ")='')"
 }
 
+func foldSQL(expr string) string {
+	if strings.HasPrefix(expr, "x.search_") || expr == "v.value_key" {
+		return expr
+	}
+	return "harmonia_lower(" + expr + ")"
+}
+
 func comparisonSQL(expr, op string, val any, number bool) (string, []any) {
 	if op == "contains" || op == "notContains" {
 		operator := ">0"
 		if op == "notContains" {
 			operator = "=0"
 		}
-		return "(" + expr + " IS NOT NULL AND instr(harmonia_lower(" + expr + "),?)" + operator + ")", []any{strings.ToLower(fmt.Sprint(val))}
+		return "(" + expr + " IS NOT NULL AND instr(" + foldSQL(expr) + ",?)" + operator + ")", []any{strings.ToLower(fmt.Sprint(val))}
 	}
 	operator := map[string]string{"eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
 	if operator == "" {
 		return "0", nil
 	}
-	lhs := "harmonia_lower(" + expr + ")"
+	lhs := foldSQL(expr)
 	var rhs any = strings.ToLower(fmt.Sprint(val))
 	if number {
 		lhs = expr
@@ -133,13 +138,13 @@ func compileRule(r Rule) (string, []any, error) {
 			if op == "notContains" {
 				op = "contains"
 			}
-			p, a := comparisonSQL("v.value", op, r.Value, false)
+			p, a := comparisonSQL("v.value_key", op, r.Value, false)
 			if op == "isEmpty" || op == "isNotEmpty" {
-				p = "harmonia_trim(v.value)<>''"
+				p = "v.nonempty=1"
 				a = nil
 			}
 			args := append([]any{strings.TrimPrefix(r.Field, "tag:")}, a...)
-			p = "EXISTS (SELECT 1 FROM json_each(t.tags) j, json_each(j.value) v WHERE j.key=? AND " + p + ")"
+			p = "t.id IN (SELECT v.track_id FROM track_tag_index v WHERE v.tag_name=? AND " + p + ")"
 			if negative {
 				p = "NOT " + p
 			}
@@ -227,9 +232,17 @@ func orderSQL(field string, desc bool) string {
 		}
 		seen[f] = true
 		expr, number := fieldSQL(f)
+		switch f {
+		case "addedAt":
+			expr = "x.search_added_at"
+		case "disc":
+			expr = "x.search_disc"
+		case "number":
+			expr = "x.search_number"
+		}
 		parts = append(parts, emptySQL(expr, f, number)+" ASC")
 		if !number {
-			expr = "harmonia_lower(" + expr + ")"
+			expr = foldSQL(expr)
 		}
 		direction := " ASC"
 		if f == field && desc {
@@ -237,13 +250,53 @@ func orderSQL(field string, desc bool) string {
 		}
 		parts = append(parts, expr+direction)
 	}
-	return strings.Join(append(parts, "t.id ASC"), ",")
+	return strings.Join(append(parts, "x.track_id ASC"), ",")
 }
 
+const trackQueryFrom = "tracks t JOIN track_search x ON x.track_id=t.id"
+
+// For an unfiltered list, walk the complete sort index first and fetch only
+// the requested page. With predicates, let SQLite choose the selective index.
+func queryFrom(q Query) string {
+	field := q.Sort
+	if field == "" {
+		field = "addedAt"
+	}
+	if q.Rule == nil && q.Search == "" && (field == "addedAt" || field == "title") {
+		direction := "asc"
+		if q.Desc {
+			direction = "desc"
+		}
+		return "track_search x INDEXED BY track_search_order_" + field + "_" + direction + " CROSS JOIN tracks t ON t.id=x.track_id"
+	}
+	return trackQueryFrom
+}
+
+type TrackPage struct {
+	Items    []Track `json:"items"`
+	Total    int     `json:"total"`
+	Page     int     `json:"page"`
+	PageSize int     `json:"pageSize"`
+}
+
+// Internal callers can explicitly request the complete ordered result.
 func (s *Store) QueryTracks(ctx context.Context, q Query) ([]Track, error) {
+	q.All = true
+	result, err := s.QueryTrackPage(ctx, q)
+	return result.Items, err
+}
+
+func (s *Store) QueryTrackPage(ctx context.Context, q Query) (TrackPage, error) {
+	result := TrackPage{Page: q.Page, PageSize: q.PageSize}
+	if !q.All {
+		result.Page = max(1, q.Page)
+		if q.PageSize != 25 && q.PageSize != 100 {
+			result.PageSize = 50
+		}
+	}
 	tx, err := s.queryDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	defer tx.Rollback()
 	db := contextReader{ctx, tx}
@@ -251,11 +304,11 @@ func (s *Store) QueryTracks(ctx context.Context, q Query) ([]Track, error) {
 	if q.PlaylistID != "" {
 		ps, err := databasePlaylists(db)
 		if err != nil {
-			return nil, err
+			return result, err
 		}
 		p := ps[q.PlaylistID]
 		if p == nil {
-			return nil, errors.New("playlist not found")
+			return result, errors.New("playlist not found")
 		}
 		if p.Smart {
 			q.Rule = p.Rule
@@ -267,19 +320,45 @@ func (s *Store) QueryTracks(ctx context.Context, q Query) ([]Track, error) {
 	}
 	where, args, err := trackWhere(q)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
-	suffix := "WHERE " + where + " ORDER BY " + orderSQL(q.Sort, q.Desc)
+	from := queryFrom(q)
+	order := orderSQL(q.Sort, q.Desc)
 	if manual {
-		where = strings.TrimPrefix(where, "t.missing=0")
-		where = "1" + where
-		suffix = "WHERE " + where + " AND t.id IN (SELECT track_id FROM playlist_items WHERE playlist_id=?) ORDER BY (SELECT position FROM playlist_items WHERE playlist_id=? AND track_id=t.id)"
-		args = append(args, q.PlaylistID, q.PlaylistID)
+		from = trackQueryFrom
+		from += " JOIN playlist_items pi ON pi.track_id=t.id"
+		where = "1" + strings.TrimPrefix(where, "t.missing=0") + " AND pi.playlist_id=?"
+		args = append(args, q.PlaylistID)
+		order = "pi.position"
 	}
-	return readModels[Track](db, "tracks t", suffix, args...)
+	suffix := "WHERE " + where + " ORDER BY " + order
+	if !q.All {
+		// Both statements share a WAL snapshot, including the playlist definition.
+		countFrom := from
+		if q.Rule == nil {
+			countFrom = "tracks t"
+			if manual {
+				countFrom += " JOIN playlist_items pi ON pi.track_id=t.id"
+			}
+		}
+		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM "+countFrom+" WHERE "+where, args...).Scan(&result.Total); err != nil {
+			return result, err
+		}
+		offset := result.Total
+		if result.Page <= result.Total/result.PageSize+1 {
+			offset = (result.Page - 1) * result.PageSize
+		}
+		suffix += " LIMIT ? OFFSET ?"
+		args = append(args, result.PageSize, offset)
+	}
+	result.Items, err = readModels[Track](db, from, suffix, args...)
+	if q.All {
+		result.Total = len(result.Items)
+	}
+	return result, err
 }
 
-func (s *Store) SmartMemberships(ctx context.Context) (map[string][]string, error) {
+func (s *Store) SmartMemberships(ctx context.Context, ids ...string) (map[string][]string, error) {
 	tx, err := s.queryDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
@@ -291,15 +370,19 @@ func (s *Store) SmartMemberships(ctx context.Context) (map[string][]string, erro
 		return nil, err
 	}
 	out := map[string][]string{}
+	selected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		selected[id] = true
+	}
 	for id, p := range playlists {
-		if !p.Smart {
+		if !p.Smart || (len(ids) > 0 && !selected[id]) {
 			continue
 		}
 		where, args, err := trackWhere(Query{Rule: p.Rule})
 		if err != nil {
 			return nil, err
 		}
-		rows, err := db.Query("SELECT t.id FROM tracks t WHERE "+where+" ORDER BY "+orderSQL(p.Sort, p.Desc), args...)
+		rows, err := db.Query("SELECT t.id FROM "+queryFrom(Query{Rule: p.Rule, Sort: p.Sort, Desc: p.Desc})+" WHERE "+where+" ORDER BY "+orderSQL(p.Sort, p.Desc), args...)
 		if err != nil {
 			return nil, err
 		}

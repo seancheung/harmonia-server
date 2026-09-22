@@ -75,6 +75,9 @@ func persistTrack(tx *sql.Tx, t Track, separators string) error {
 	if err := upsertModel(tx, "tracks", t); err != nil {
 		return err
 	}
+	if err := persistSearchTrack(tx, t); err != nil {
+		return err
+	}
 	if _, err := tx.Exec("DELETE FROM track_artists WHERE track_id=?", t.ID); err != nil {
 		return err
 	}
