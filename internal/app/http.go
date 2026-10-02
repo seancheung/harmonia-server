@@ -88,6 +88,9 @@ func (a *App) Handler() http.Handler {
 		respond(w, 200, map[string]any{"status": "ok", "version": "1.0.0"})
 	})
 	m.HandleFunc("GET /api/library", a.library)
+	m.HandleFunc("GET /api/library/changes", func(w http.ResponseWriter, r *http.Request) {
+		respond(w, 200, a.store.LibraryChanges(r.URL.Query().Get("since")))
+	})
 	m.HandleFunc("POST /api/tracks/query", a.query)
 	m.HandleFunc("POST /api/sources", a.sources)
 	m.HandleFunc("PUT /api/sources/{id}", a.sources)
@@ -114,6 +117,17 @@ func (a *App) Handler() http.Handler {
 			return
 		}
 		respond(w, 200, map[string]any{"memberships": memberships})
+	})
+	m.HandleFunc("GET /api/playlists", func(w http.ResponseWriter, r *http.Request) {
+		kind := r.URL.Query().Get("type")
+		if kind == "" {
+			kind = "all"
+		}
+		if kind != "all" && kind != "normal" && kind != "smart" {
+			respond(w, 400, map[string]string{"error": "type must be all, normal or smart"})
+			return
+		}
+		respond(w, 200, map[string]any{"playlists": a.store.Playlists(kind)})
 	})
 	m.HandleFunc("POST /api/playlists", a.playlists)
 	m.HandleFunc("PUT /api/playlists/{id}", a.playlists)
@@ -183,7 +197,7 @@ func (a *App) Handler() http.Handler {
 	})
 }
 func (a *App) library(w http.ResponseWriter, r *http.Request) {
-	st := a.store.Library()
+	st := a.store.LibrarySnapshot()
 	respond(w, 200, st)
 }
 

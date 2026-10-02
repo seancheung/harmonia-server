@@ -209,3 +209,19 @@ The next ordinary library scan rereads metadata created by older versions once, 
 ### Waveform cache
 
 `GET /api/tracks/{id}/waveform` generates 512 amplitude peaks on demand using FFmpeg. Results are cached under `HARMONIA_DATA/waveforms`, with one replaceable JSON file per track. Changes to the track revision or source file invalidate its cached waveform. Generation is serialized, streams decoded samples without retaining the full audio, and has a 90-second timeout. These small files are separate from the transcoding cache limit. No waveforms are generated during library scans.
+
+### Playlist list API
+
+`GET /api/playlists?type=all|normal|smart` returns `{ "playlists": [...] }` without music-library tracks. Omitted or empty `type` means `all`; unknown values return HTTP 400. An empty result is `[]`. Playlist objects retain ordered track IDs and smart rules. Existing authentication applies.
+
+### Incremental library synchronization
+
+`GET /api/library` is an initialization snapshot and includes an opaque `syncCursor`. Subsequent refreshes use `GET /api/library/changes?since=<cursor>` and merge the response by track ID:
+
+- `tracks`: latest values for added or modified tracks, without lyrics or cover paths.
+- `removed`: IDs removed from the library; missing-file tombstones are still normal track updates.
+- `metadata`: sources, playlists, rules and settings, included only when those values changed. Its `tracks` and `sessions` fields are null and must not replace the client's tracks.
+- `syncCursor`: advance only after successfully applying the complete response.
+- `reset`: when true, discard the old cursor and request a fresh snapshot.
+
+Unchanged libraries return empty arrays and the same cursor. Changes are coalesced per track, so clients can skip intermediate revisions. Cursors are scoped to the current server process; a restart or pruning more than 10,000 removed IDs invalidates older cursors. Network errors do not require a full reload. Initial snapshot and cursor are captured atomically with committed writes. Existing `/api/library` consumers remain compatible.
