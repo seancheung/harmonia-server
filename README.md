@@ -148,7 +148,7 @@ This service is intended for a private network. For exposure outside it, configu
 
 ## Filtering, playlists and history
 
-`POST /api/tracks/query` validates nested `all`/`any` groups, up to 30 total nodes and four group levels. Folder rules match a source ID plus a full directory path and an optional recursive flag. Search covers music metadata, excluding file paths and filenames. Sorting is stable, with missing values always last. Pagination happens after filtering and sorting; `all: true` requests the complete playback snapshot.
+`GET /api/browse` validates nested `all`/`any` groups, up to 30 total nodes and four group levels. Folder rules match a source ID plus a full directory path and an optional recursive flag. Search covers music metadata and filenames, excluding server file paths. Sorting is stable, with missing values always last. Pagination happens after filtering and sorting; playback selections use `/api/queue/query` with a 100-song limit.
 
 Ordinary playlists store ordered IDs. An addition containing any duplicate fails atomically. The `move` action uses a one-based position in the complete list. Smart playlists store the same rule tree plus a sort field and direction, and evaluate against current metadata, favorites and counts.
 
@@ -181,7 +181,7 @@ See [API.md](API.md) for request bodies and examples. JSON errors use `{ "error"
 
 ## Persistence and implementation
 
-The SQLite WAL database stores one library document and commits each mutation atomically. In-memory snapshots are deep copied and protected by a read/write lock. This keeps playlist, source and metadata transitions consistent, but both document writes and full-library browser bootstrap are proportional to library size. Large-library deployments should benchmark their collection before expanding this storage model to indexed relational tables.
+The SQLite WAL database stores normalized relational data and commits mutations atomically. Page APIs read immutable in-memory state, filter and group on the server, and return bounded pages. Clients no longer bootstrap full-library snapshots. Uncached grouping still scans library metadata; benchmark unusually large collections. Serialized page responses are cached by library revision with a 120-entry, 20 MB limit.
 
 Music sources are never modified. Only application-owned files under the data and cache directories are written or cleaned. There is no background filesystem watcher, online metadata service, offline playback cache, backup workflow or multi-user model.
 
@@ -212,16 +212,8 @@ The next ordinary library scan rereads metadata created by older versions once, 
 
 ### Playlist list API
 
-`GET /api/playlists?type=all|normal|smart` returns `{ "playlists": [...] }` without music-library tracks. Omitted or empty `type` means `all`; unknown values return HTTP 400. An empty result is `[]`. Playlist objects retain ordered track IDs and smart rules. Existing authentication applies.
+`GET /api/playlists?type=all|normal|smart` returns `{ "playlists": [...] }` without music-library tracks. Omitted or empty `type` means `all`; unknown values return HTTP 400. An empty result is `[]`. Playlist summaries retain smart rules but omit ordered track IDs. Existing authentication applies.
 
-### Incremental library synchronization
+### Page APIs
 
-`GET /api/library` is an initialization snapshot and includes an opaque `syncCursor`. Subsequent refreshes use `GET /api/library/changes?since=<cursor>` and merge the response by track ID:
-
-- `tracks`: latest values for added or modified tracks, without lyrics or cover paths.
-- `removed`: IDs removed from the library; missing-file tombstones are still normal track updates.
-- `metadata`: sources, playlists, rules and settings, included only when those values changed. Its `tracks` and `sessions` fields are null and must not replace the client's tracks.
-- `syncCursor`: advance only after successfully applying the complete response.
-- `reset`: when true, discard the old cursor and request a fresh snapshot.
-
-Unchanged libraries return empty arrays and the same cursor. Changes are coalesced per track, so clients can skip intermediate revisions. Cursors are scoped to the current server process; a restart or pruning more than 10,000 removed IDs invalidates older cursors. Network errors do not require a full reload. Initial snapshot and cursor are captured atomically with committed writes. Existing `/api/library` consumers remain compatible.
+Current Web and iOS clients load `/api/config`, `/api/home` and paginated `/api/browse` responses with ETag revalidation. `/api/library/version` detects changes without downloading tracks. `/api/queue/query` caps Play all at 100 songs on the server. Playlist summaries omit membership IDs. See [API.md](API.md#page-based-clients) for query fields, limits and cache behavior. The old full-library, incremental-sync, track-query and membership endpoints have been removed. Upgrade both clients together with this server.

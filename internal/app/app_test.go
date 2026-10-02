@@ -266,10 +266,10 @@ func TestReplayGain(t *testing.T) {
 func TestAuthAndPagination(t *testing.T) {
 	a := testApp(t)
 	a.config.Token = "secret"
-	if request(t, a, "GET", "/api/library", nil).Code != 401 {
+	if request(t, a, "GET", "/api/config", nil).Code != 401 {
 		t.Fatal("auth missing")
 	}
-	if request(t, a, "GET", "/api/library?token=secret", nil).Code != 200 {
+	if request(t, a, "GET", "/api/config?token=secret", nil).Code != 200 {
 		t.Fatal("token rejected")
 	}
 	a.config.Token = ""
@@ -279,7 +279,7 @@ func TestAuthAndPagination(t *testing.T) {
 		}
 		return nil
 	})
-	res := request(t, a, "POST", "/api/tracks/query", Query{Page: 2, PageSize: 25, Sort: "title"})
+	res := request(t, a, "GET", browseURL("/api/browse", BrowseQuery{Section: "songs", Page: 2, PageSize: 25, Sort: "title"}), nil)
 	var result struct {
 		Items []Track `json:"items"`
 		Total int     `json:"total"`

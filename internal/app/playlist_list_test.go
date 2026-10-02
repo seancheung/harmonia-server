@@ -39,7 +39,7 @@ func TestPlaylistListFilters(t *testing.T) {
 			if len(result.Playlists) != tc.count {
 				t.Fatalf("unexpected list: %+v", result.Playlists)
 			}
-			if tc.query == "?type=normal" && (result.Playlists[0].Smart || len(result.Playlists[0].Tracks) != 1 || result.Playlists[0].Tracks[0] != "track") {
+			if tc.query == "?type=normal" && (result.Playlists[0].Smart || len(result.Playlists[0].Tracks) != 0) {
 				t.Fatal("normal playlist mismatch")
 			}
 			if tc.query == "?type=smart" && !result.Playlists[0].Smart {

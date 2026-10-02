@@ -11,6 +11,17 @@ import (
 	"modernc.org/sqlite"
 )
 
+type Query struct {
+	Search     string `json:"search"`
+	Rule       *Rule  `json:"rule"`
+	Sort       string `json:"sort"`
+	Desc       bool   `json:"desc"`
+	Page       int    `json:"page"`
+	PageSize   int    `json:"pageSize"`
+	PlaylistID string `json:"playlistId"`
+	All        bool   `json:"all"`
+}
+
 func init() {
 	for name, fn := range map[string]func(any) any{
 		"harmonia_lower": func(v any) any {

@@ -26,6 +26,7 @@ func ConfigFromEnv() Config {
 }
 
 type App struct {
+	pages        pageCache
 	config       Config
 	store        *Store
 	scanner      *Scanner
@@ -87,11 +88,42 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, 200, map[string]any{"status": "ok", "version": "1.0.0"})
 	})
-	m.HandleFunc("GET /api/library", a.library)
-	m.HandleFunc("GET /api/library/changes", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, 200, a.store.LibraryChanges(r.URL.Query().Get("since")))
+	m.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
+		a.servePage(w, r, func(state State) any {
+			st := state
+			st.Sources = append([]Source{}, st.Sources...)
+			for i := range st.Sources {
+				st.Sources[i].FolderTimes = nil
+			}
+			return map[string]any{"sources": st.Sources, "ruleSets": st.RuleSets, "cacheLimit": st.CacheLimit, "tagSeparators": st.TagSeparators}
+		})
 	})
-	m.HandleFunc("POST /api/tracks/query", a.query)
+	m.HandleFunc("GET /api/library/version", func(w http.ResponseWriter, r *http.Request) {
+		a.store.mu.RLock()
+		cursor := a.store.pageVersion()
+		a.store.mu.RUnlock()
+		pageJSON(w, r, map[string]string{"version": cursor})
+	})
+	m.HandleFunc("GET /api/home", a.home)
+	m.HandleFunc("GET /api/browse", a.browse)
+	m.HandleFunc("GET /api/queue/query", a.browseQueue)
+	m.HandleFunc("POST /api/tracks/resolve", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		if len(body.IDs) > 200 {
+			respond(w, 400, map[string]string{"error": "at most 200 IDs are allowed"})
+			return
+		}
+		tracks := a.store.Tracks(body.IDs)
+		for i := range tracks {
+			tracks[i] = cleanTrack(tracks[i])
+		}
+		respond(w, 200, map[string]any{"items": tracks})
+	})
 	m.HandleFunc("POST /api/sources", a.sources)
 	m.HandleFunc("PUT /api/sources/{id}", a.sources)
 	m.HandleFunc("DELETE /api/sources/{id}", a.sources)
@@ -110,14 +142,6 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("PUT /api/tracks/{id}/favorite", a.favorite)
 	m.HandleFunc("POST /api/tracks/{id}/played", a.played)
 	m.HandleFunc("DELETE /api/recent", a.clearRecent)
-	m.HandleFunc("GET /api/playlists/memberships", func(w http.ResponseWriter, r *http.Request) {
-		memberships, err := a.store.SmartMemberships(r.Context(), r.URL.Query()["id"]...)
-		if err != nil {
-			problem(w, err)
-			return
-		}
-		respond(w, 200, map[string]any{"memberships": memberships})
-	})
 	m.HandleFunc("GET /api/playlists", func(w http.ResponseWriter, r *http.Request) {
 		kind := r.URL.Query().Get("type")
 		if kind == "" {
@@ -127,7 +151,8 @@ func (a *App) Handler() http.Handler {
 			respond(w, 400, map[string]string{"error": "type must be all, normal or smart"})
 			return
 		}
-		respond(w, 200, map[string]any{"playlists": a.store.Playlists(kind)})
+		playlists := a.store.PlaylistSummaries(kind)
+		pageJSON(w, r, map[string]any{"playlists": playlists})
 	})
 	m.HandleFunc("POST /api/playlists", a.playlists)
 	m.HandleFunc("PUT /api/playlists/{id}", a.playlists)
@@ -175,8 +200,8 @@ func (a *App) Handler() http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Range")
-			w.Header().Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Range, If-None-Match")
+			w.Header().Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, ETag")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		}
 		if r.Method == "OPTIONS" {
@@ -195,34 +220,6 @@ func (a *App) Handler() http.Handler {
 		}
 		m.ServeHTTP(w, r)
 	})
-}
-func (a *App) library(w http.ResponseWriter, r *http.Request) {
-	st := a.store.LibrarySnapshot()
-	respond(w, 200, st)
-}
-
-type Query struct {
-	Search     string `json:"search"`
-	Rule       *Rule  `json:"rule"`
-	Sort       string `json:"sort"`
-	Desc       bool   `json:"desc"`
-	Page       int    `json:"page"`
-	PageSize   int    `json:"pageSize"`
-	PlaylistID string `json:"playlistId"`
-	All        bool   `json:"all"`
-}
-
-func (a *App) query(w http.ResponseWriter, r *http.Request) {
-	var q Query
-	if !decode(w, r, &q) {
-		return
-	}
-	result, err := a.store.QueryTrackPage(r.Context(), q)
-	if err != nil {
-		problem(w, err)
-		return
-	}
-	respond(w, 200, result)
 }
 func (a *App) sources(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -412,6 +409,7 @@ func (a *App) playlists(w http.ResponseWriter, r *http.Request) {
 		problem(w, e)
 		return
 	}
+	p.Tracks = []string{}
 	respond(w, 200, p)
 }
 func (a *App) playlistItems(w http.ResponseWriter, r *http.Request) {

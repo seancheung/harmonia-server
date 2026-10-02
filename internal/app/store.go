@@ -19,16 +19,14 @@ import (
 // Writers commit changed rows atomically, then publish an immutable snapshot.
 // Readers copy outside the snapshot lock; SQLite writes never block Read.
 type Store struct {
-	mu                   sync.RWMutex
-	writeMu              sync.Mutex
-	db                   *sql.DB
-	queryDB              *sql.DB
-	state                State
-	trackIndex           map[string]int
-	syncEpoch            string
-	syncRevision         uint64
-	syncMetadataRevision uint64
-	syncTracks           map[string]uint64
+	mu           sync.RWMutex
+	writeMu      sync.Mutex
+	db           *sql.DB
+	queryDB      *sql.DB
+	state        State
+	trackIndex   map[string]int
+	pageEpoch    string
+	pageRevision uint64
 }
 
 func emptyState() State {
@@ -77,7 +75,7 @@ func OpenStore(file string) (*Store, error) {
 	if err = ensureSearchIndexes(db); err != nil {
 		return fail(err)
 	}
-	s := &Store{db: db, state: emptyState(), syncEpoch: newID(), syncTracks: make(map[string]uint64)}
+	s := &Store{db: db, state: emptyState(), pageEpoch: newID()}
 	if err = s.load(); err != nil {
 		return fail(err)
 	}
@@ -110,9 +108,9 @@ func (s *Store) indexTracks() {
 	}
 }
 func (s *Store) snapshot() State { s.mu.RLock(); defer s.mu.RUnlock(); return s.state }
-func (s *Store) publish(next State, reindex bool, changed ...string) {
+func (s *Store) publish(next State, reindex bool) {
 	s.mu.Lock()
-	s.recordLibraryChanges(next, reindex, changed)
+	s.pageRevision++
 	s.state = next
 	if reindex {
 		s.indexTracks()
@@ -285,7 +283,7 @@ func (s *Store) SetFavorite(id string, favorite bool) error {
 	next := before
 	next.Tracks = slices.Clone(before.Tracks)
 	next.Tracks[i].Favorite = favorite
-	s.publish(next, false, id)
+	s.publish(next, false)
 	return nil
 }
 func (s *Store) RecordPlayed(id, session string, seconds float64, completed, seeked bool, at time.Time) error {
@@ -345,18 +343,16 @@ func (s *Store) RecordPlayed(id, session string, seconds float64, completed, see
 		}
 		return strings.Compare(ta.ID, tb.ID)
 	})
-	changed := []string{id}
 	if len(indices) > 500 {
 		for _, j := range indices[500:] {
 			next.Tracks[j].LastPlayed = 0
-			changed = append(changed, next.Tracks[j].ID)
 		}
 	}
 	if session != "" {
 		next.Sessions = maps.Clone(before.Sessions)
 		next.Sessions[id+":"+session] = true
 	}
-	s.publish(next, false, changed...)
+	s.publish(next, false)
 	return nil
 }
 func (s *Store) ClearRecent() error {
@@ -367,14 +363,10 @@ func (s *Store) ClearRecent() error {
 	}
 	next := s.snapshot()
 	next.Tracks = slices.Clone(next.Tracks)
-	changed := []string{}
 	for i := range next.Tracks {
-		if next.Tracks[i].LastPlayed > 0 {
-			changed = append(changed, next.Tracks[i].ID)
-		}
 		next.Tracks[i].LastPlayed = 0
 	}
-	s.publish(next, false, changed...)
+	s.publish(next, false)
 	return nil
 }
 func (s *Store) Close() error {
@@ -383,8 +375,8 @@ func (s *Store) Close() error {
 	return errors.Join(s.queryDB.Close(), s.db.Close())
 }
 
-// Playlists returns only playlist metadata and ordered item IDs, without copying tracks.
-func (s *Store) Playlists(kind string) []Playlist {
+// PlaylistSummaries omits ordered membership without copying library tracks.
+func (s *Store) PlaylistSummaries(kind string) []Playlist {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]Playlist, 0)
@@ -392,6 +384,7 @@ func (s *Store) Playlists(kind string) []Playlist {
 		if kind == "normal" && playlist.Smart || kind == "smart" && !playlist.Smart {
 			continue
 		}
+		playlist.Tracks = []string{}
 		result = append(result, clone(playlist))
 	}
 	return result

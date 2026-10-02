@@ -88,7 +88,7 @@ func TestOriginalAudioMediaRequests(t *testing.T) {
 			req.Header.Set("Access-Control-Request-Headers", "range")
 			res = httptest.NewRecorder()
 			a.Handler().ServeHTTP(res, req)
-			if res.Code != 204 || res.Header().Get("Access-Control-Allow-Headers") != "Content-Type, Authorization, Range" {
+			if res.Code != 204 || res.Header().Get("Access-Control-Allow-Headers") != "Content-Type, Authorization, Range, If-None-Match" {
 				t.Fatal("range preflight failed")
 			}
 		})
