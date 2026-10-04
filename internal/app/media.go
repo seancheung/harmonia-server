@@ -247,12 +247,7 @@ func matched(t Track, sets []RuleSet, id string) *Conversion {
 	}
 	return nil
 }
-func (a *App) stream(w http.ResponseWriter, r *http.Request) {
-	t, p, e := a.track(r.PathValue("id"))
-	if e != nil {
-		respond(w, 404, map[string]string{"error": e.Error()})
-		return
-	}
+func (a *App) streamConversion(t Track, r *http.Request) (*Conversion, *float64) {
 	rule := matched(t, a.store.RuleSets(), r.URL.Query().Get("ruleSet"))
 	var gain *float64
 	if r.URL.Query().Get("output") == "airplay" {
@@ -266,6 +261,16 @@ func (a *App) stream(w http.ResponseWriter, r *http.Request) {
 			rule.GainIdentity = r.URL.Query().Get("gain") + ":" + r.URL.Query().Get("preamp") + ":" + r.URL.Query().Get("protect")
 		}
 	}
+	return rule, gain
+}
+
+func (a *App) stream(w http.ResponseWriter, r *http.Request) {
+	t, p, e := a.track(r.PathValue("id"))
+	if e != nil {
+		respond(w, 404, map[string]string{"error": e.Error()})
+		return
+	}
+	rule, gain := a.streamConversion(t, r)
 	if rule == nil {
 		// Do not rely on OS MIME registrations or sniffing for media requests.
 		if contentType := audioContentType(filepath.Ext(p)); contentType != "" {

@@ -148,3 +148,53 @@ Browse query fields are `section`, `detail`, `preset`, `search`, `rule`, `sort`,
 Browse responses include `items`, `groups`, `folders`, `total`, `trackCount`, `libraryCount`, `page`, `pageSize`, `heading`, `artist`, `year`, and `discs`. Album detail includes `cover`; playlist detail includes metadata in `playlist`. Group previews contain at most four tracks. Lyrics are fetched separately. Filtering precedes pagination; ordinary playlist order is retained.
 
 Configuration, home, browse, version and playlist-list responses expose content ETags. Send `If-None-Match` to receive a bodyless 304 when unchanged. Responses use `Cache-Control: private, no-cache`; clients show their persisted page immediately and revalidate in the background. Cache keys must include the server, account/token and complete query. The server caches at most 120 page representations and 20 MB; committed library changes invalidate their revision. Authentication is checked on every request, including cache hits. Old `/library`, `/library/changes`, `/tracks/query`, and `/playlists/memberships` routes are removed (404, or 405 when the path matches another method). There is no compatibility fallback. Upgrade server and clients together.
+
+### Actual playback audio information
+
+`GET /tracks/{id}/audio-info` uses the same authentication and query parameters as
+`GET /tracks/{id}/stream`: `ruleSet`, and for OwnTone `output=airplay`, `gain`,
+`preamp`, `protect`. Clients must send the same values used for playback. Auto gain
+must first be resolved to `track` or `album`, as for streaming. The response is:
+
+```json
+{
+  "trackId": "song-id",
+  "revision": "song-revision",
+  "audioIdentity": "sha256-identity",
+  "transcoded": true,
+  "source": {
+    "codec": "flac", "container": "flac", "sampleRate": 96000,
+    "channels": 2, "bitDepth": 24, "duration": 240,
+    "bitrate": 2500000, "bitrateKind": "estimatedAverage",
+    "bitrateSource": "containerSize"
+  },
+  "output": {
+    "codec": "aac", "container": "aac", "sampleRate": 44100,
+    "channels": 2, "duration": 240,
+    "bitrate": 257000, "bitrateKind": "average",
+    "bitrateSource": "audioStream"
+  }
+}
+```
+
+Numbers above are illustrative. `source` describes the original file; `output`
+describes the actual file served for these playback parameters. A nonmatching
+conversion rule leaves `transcoded=false`. OwnTone gain that requires conversion
+is included. This endpoint may generate the converted file, reusing the same
+conversion cache and lock as streaming; it does not download audio to the client.
+It probes actual bytes with ffprobe, never presents configured target bitrate as
+actual bitrate. Unknown numeric fields are omitted. `sampleRate` is Hz; `bitrate`
+is **bits per second**, unlike any existing library fields expressed in kbps.
+`bitDepth` is reported for PCM/lossless codecs only, not the decoder sample format
+of lossy audio. `average` means the audio stream's reported bitrate;
+`estimatedAverage` is inferred from full container size / duration and includes
+container overhead and embedded artwork. Neither indicates an instantaneous
+bitrate or proves CBR. Clients should label estimates accordingly.
+
+Responses use `Cache-Control: private, no-store`. Clients may persist the metadata
+with their matching local audio cache and retain `revision` and `audioIdentity`
+to distinguish outputs. An older local audio file must retain its saved metadata,
+not be relabeled with a new server response after rules change. Missing tracks
+return 404; failed conversion/probing returns 422 without speculative metadata.
+This endpoint describes server audio bytes, not the final hardware/AirPlay output
+format after device-side resampling.

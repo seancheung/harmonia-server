@@ -159,6 +159,7 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("DELETE /api/playlists/{id}", a.playlists)
 	m.HandleFunc("POST /api/playlists/{id}/items", a.playlistItems)
 	m.HandleFunc("GET /api/tracks/{id}/stream", a.stream)
+	m.HandleFunc("GET /api/tracks/{id}/audio-info", a.audioInfo)
 	m.HandleFunc("GET /api/tracks/{id}/cover", a.cover)
 	m.HandleFunc("GET /api/tracks/{id}/waveform", a.waveform)
 	m.HandleFunc("GET /api/tracks/{id}/lyrics", a.lyrics)
