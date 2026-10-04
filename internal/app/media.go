@@ -388,6 +388,9 @@ func (a *App) ruleSets(w http.ResponseWriter, r *http.Request) {
 		}
 		for i, s := range st.RuleSets {
 			if s.ID == r.PathValue("id") {
+				if r.Method == "DELETE" && st.OwnToneRuleSet == s.ID {
+					return errors.New("conversion rule is used by OwnTone; change OwnTone settings first")
+				}
 				if r.Method == "DELETE" {
 					st.RuleSets = append(st.RuleSets[:i], st.RuleSets[i+1:]...)
 				} else {
@@ -404,4 +407,38 @@ func (a *App) ruleSets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 200, set)
+}
+
+func (a *App) ownToneSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RuleSet *string `json:"ruleSet"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if body.RuleSet == nil {
+		problem(w, errors.New("ruleSet is required"))
+		return
+	}
+	err := a.store.UpdateMetadata(func(st *State) error {
+		if *body.RuleSet != "" {
+			found := false
+			for _, rule := range st.RuleSets {
+				if rule.ID == *body.RuleSet {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return errors.New("conversion rule not found")
+			}
+		}
+		st.OwnToneRuleSet = *body.RuleSet
+		return nil
+	})
+	if err != nil {
+		problem(w, err)
+		return
+	}
+	respond(w, 200, map[string]string{"ruleSet": *body.RuleSet})
 }

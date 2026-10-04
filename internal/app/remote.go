@@ -235,6 +235,7 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 		player["item_progress_ms"] = *saved.ResumePosition
 	}
 	result := map[string]any{"configured": r.app.config.OwnTone != "", "player": player, "error": r.lastError, "deadline": r.deadline, "waiting": r.waiting, "finish": r.finish, "index": saved.Index, "gainContext": saved.GainContext, "queueVersion": version}
+	result["audioParameters"] = map[string]any{"ruleSet": saved.RuleSet, "gain": saved.Gain, "preamp": saved.Preamp, "protect": saved.Protect}
 	if req.URL.Query().Get("queueVersion") != version {
 		tracks := r.app.store.Tracks(saved.Queue)
 		result["queue"] = tracks
@@ -322,6 +323,7 @@ func (r *Remote) Command(w http.ResponseWriter, req *http.Request) {
 		}
 		uris := []string{}
 		library := r.app.store.Read()
+		b.RuleSet = library.OwnToneRuleSet // Remote quality is owned by the server, never the sending client.
 		for _, id := range b.IDs {
 			if _, _, err := trackFromState(library, id); err != nil {
 				e = err

@@ -102,13 +102,14 @@ type RuleSet struct {
 	Rules []Conversion `json:"rules"`
 }
 type State struct {
-	Sources       []Source        `json:"sources"`
-	Tracks        []Track         `json:"tracks"`
-	Playlists     []Playlist      `json:"playlists"`
-	RuleSets      []RuleSet       `json:"ruleSets"`
-	CacheLimit    int64           `json:"cacheLimit"`
-	TagSeparators string          `json:"tagSeparators"`
-	Sessions      map[string]bool `json:"sessions"`
+	OwnToneRuleSet string          `json:"ownToneRuleSet"`
+	Sources        []Source        `json:"sources"`
+	Tracks         []Track         `json:"tracks"`
+	Playlists      []Playlist      `json:"playlists"`
+	RuleSets       []RuleSet       `json:"ruleSets"`
+	CacheLimit     int64           `json:"cacheLimit"`
+	TagSeparators  string          `json:"tagSeparators"`
+	Sessions       map[string]bool `json:"sessions"`
 }
 
 func newID() string { b := make([]byte, 16); _, _ = rand.Read(b); return hex.EncodeToString(b) }

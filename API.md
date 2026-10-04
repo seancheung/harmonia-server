@@ -198,3 +198,25 @@ not be relabeled with a new server response after rules change. Missing tracks
 return 404; failed conversion/probing returns 422 without speculative metadata.
 This endpoint describes server audio bytes, not the final hardware/AirPlay output
 format after device-side resampling.
+
+`GET /remote` also includes `audioParameters: {ruleSet, gain, preamp, protect}`
+from the server's saved remote queue, including responses that omit an unchanged
+queue. Clients should use these values with `output=airplay` for remote audio
+information, not their local playback preferences.
+
+### OwnTone conversion rule
+
+`GET /config` includes `ownToneRuleSet` (string, default `""` for original audio).
+`PUT /owntone-settings` accepts `{ "ruleSet": "existing-rule-id" }`, or
+`{ "ruleSet": "" }` to use original audio. Missing/null/unknown IDs are rejected.
+The selection is persisted in the server settings database. A rule selected by
+OwnTone cannot be deleted until another selection or original audio is chosen.
+
+`POST /remote` with `action=start` always resolves its conversion rule from this
+server setting and ignores the client's `ruleSet`. It stores that effective rule
+with the remote queue for append/recovery and `audioParameters`. Changing the
+setting applies to the next queue start, not an already playing queue. There is
+no follow-client mode. Local streaming and local cache rules are unaffected.
+Existing ReplayGain behavior is unchanged and can require conversion even when
+original audio is selected. Web exposes this setting alongside conversion rule
+management; iOS has no management control for it.

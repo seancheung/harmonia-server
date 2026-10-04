@@ -208,10 +208,13 @@ func (s *Store) persistChanges(tx *sql.Tx, before, next State, metadata bool) er
 	}, remove("rule_sets")); err != nil {
 		return err
 	}
-	for key, value := range map[string]string{"cache_limit": strconv.FormatInt(next.CacheLimit, 10), "tag_separators": next.TagSeparators} {
+	for key, value := range map[string]string{"cache_limit": strconv.FormatInt(next.CacheLimit, 10), "tag_separators": next.TagSeparators, "owntone_rule_set": next.OwnToneRuleSet} {
 		previous := before.TagSeparators
 		if key == "cache_limit" {
 			previous = strconv.FormatInt(before.CacheLimit, 10)
+		}
+		if key == "owntone_rule_set" {
+			previous = before.OwnToneRuleSet
 		}
 		if previous != value {
 			if _, err := tx.Exec("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, value); err != nil {
@@ -347,6 +350,8 @@ func (s *Store) load() error {
 				return fmt.Errorf("invalid cache limit: %w", err)
 			}
 			s.state.CacheLimit = n
+		case "owntone_rule_set":
+			s.state.OwnToneRuleSet = value
 		case "tag_separators":
 			s.state.TagSeparators = value
 		}
