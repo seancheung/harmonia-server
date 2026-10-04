@@ -165,3 +165,42 @@ func TestRemovedLibraryEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestAlbumTrackNumberSortKeepsDiscsTogether(t *testing.T) {
+	st := State{Tracks: []Track{
+		{ID: "d2t1", AlbumID: "album", Disc: 2, Number: 1},
+		{ID: "d1t2", AlbumID: "album", Artist: "A", Disc: 1, Number: 2},
+		{ID: "d2t2", AlbumID: "album", Disc: 2, Number: 2},
+		{ID: "d1t1", AlbumID: "album", Artist: "Z", Disc: 0, Number: 1},
+	}}
+	for _, tc := range []struct {
+		desc bool
+		want []string
+	}{
+		{false, []string{"d1t1", "d1t2", "d2t1", "d2t2"}},
+		{true, []string{"d1t2", "d1t1", "d2t2", "d2t1"}},
+	} {
+		tracks, _ := browseTracks(st, BrowseQuery{Section: "albums", Detail: "album", Sort: "number", Desc: tc.desc})
+		if len(tracks) != len(tc.want) {
+			t.Fatalf("got %d tracks", len(tracks))
+		}
+		for i, want := range tc.want {
+			if tracks[i].ID != want {
+				t.Fatalf("desc=%v index=%d got=%s want=%s", tc.desc, i, tracks[i].ID, want)
+			}
+		}
+	}
+}
+
+func TestAlbumDefaultOrderIgnoresArtistBeforeTrackNumber(t *testing.T) {
+	st := State{Tracks: []Track{
+		{ID: "second", AlbumID: "album", Artist: "A", Disc: 1, Number: 2},
+		{ID: "first", AlbumID: "album", Artist: "Z", Disc: 1, Number: 1},
+	}}
+	for _, field := range []string{"", "title", "number"} {
+		tracks, _ := browseTracks(st, BrowseQuery{Section: "albums", Detail: "album", Sort: field})
+		if len(tracks) != 2 || tracks[0].ID != "first" || tracks[1].ID != "second" {
+			t.Fatalf("sort=%q incorrect album order: %v", field, tracks)
+		}
+	}
+}

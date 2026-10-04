@@ -171,7 +171,7 @@ func browseTracks(st State, q BrowseQuery) ([]Track, *Playlist) {
 		desc = true
 	}
 	if q.Section == "albums" && q.Detail != "" && field == "title" {
-		field = "disc"
+		field = "number"
 	}
 	if playlist != nil && playlist.Smart {
 		field = playlist.Sort
@@ -179,6 +179,12 @@ func browseTracks(st State, q BrowseQuery) ([]Track, *Playlist) {
 	}
 	if playlist == nil || playlist.Smart {
 		sortTracks(result, field, desc)
+	}
+	if q.Section == "albums" && q.Detail != "" && field == "number" {
+		// Keep discs together before pagination, retaining track order within each disc.
+		sort.SliceStable(result, func(i, j int) bool {
+			return max(1, result[i].Disc) < max(1, result[j].Disc)
+		})
 	}
 	if q.Preset == "topSongs" {
 		sort.SliceStable(result, func(i, j int) bool {
