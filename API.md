@@ -36,7 +36,7 @@ Base path: `/api`. Request and response bodies are JSON except `stream` and `cov
 | GET | `/cache` | `{used, limit, pending, active}` in bytes/counts |
 | PUT | `/cache` | `{limit: 5368709120}` |
 | DELETE | `/cache` | Clean inactive entries; mark active work pending |
-| GET | `/outputs` | OwnTone output devices or an explanatory error |
+| GET | `/outputs` | AirPlay 1 / 2 output devices; select at most one |
 | GET | `/remote` | Actual remote player, queue/index and sleep timer |
 | POST | `/remote` | Remote playback command |
 
@@ -129,7 +129,7 @@ Examples:
 {"action":"timer","deadline":1893456000000,"finish":true}
 ```
 
-`deadline` is absolute Unix milliseconds. `{action:"timer",deadline:0,finish:true}` means end of current song; `finish:false` with zero cancels. Other actions: `play`, `pause`, `next`, `previous`, `select` (zero-based `index`), `seek` (`position` in milliseconds), `volume` (0–100), `repeat` (`off`/`all`/`single`), `shuffle`, `local`, `append` (`ids`, zero-based insertion `position`), `move` (`index`, `position`), `remove` (`index`), `clear`, and `pair` (`outputId`, `pin`).
+`deadline` is absolute Unix milliseconds. `{action:"timer",deadline:0,finish:true}` means end of current song; `finish:false` with zero cancels. Other actions: `play`, `pause`, `stop`, `next`, `previous`, `select` (zero-based `index`), `seek` (`position` in milliseconds), `volume` (0–100), `repeat` (`off`/`all`/`single`), `shuffle`, `local`, `append` (`ids`, zero-based insertion `position`), `move` (`index`, `position`), `remove` (`index`), `clear`, and `pair` (`outputId`, `pin`).
 
 ## Page-based clients
 
@@ -152,7 +152,7 @@ Configuration, home, browse, version and playlist-list responses expose content 
 ### Actual playback audio information
 
 `GET /tracks/{id}/audio-info` uses the same authentication and query parameters as
-`GET /tracks/{id}/stream`: `ruleSet`, and for OwnTone `output=airplay`, `gain`,
+`GET /tracks/{id}/stream`: `ruleSet`, and for remote audio previews `output=airplay`, `gain`,
 `preamp`, `protect`. Clients must send the same values used for playback. Auto gain
 must first be resolved to `track` or `album`, as for streaming. The response is:
 
@@ -179,8 +179,7 @@ must first be resolved to `track` or `album`, as for streaming. The response is:
 
 Numbers above are illustrative. `source` describes the original file; `output`
 describes the actual file served for these playback parameters. A nonmatching
-conversion rule leaves `transcoded=false`. OwnTone gain that requires conversion
-is included. This endpoint may generate the converted file, reusing the same
+conversion rule leaves `transcoded=false`. Remote audio previews always normalize to stereo 44.1 kHz/16-bit WAV and include ReplayGain. This endpoint may generate the converted file, reusing the same
 conversion cache and lock as streaming; it does not download audio to the client.
 It probes actual bytes with ffprobe, never presents configured target bitrate as
 actual bitrate. Unknown numeric fields are omitted. `sampleRate` is Hz; `bitrate`
@@ -204,19 +203,36 @@ from the server's saved remote queue, including responses that omit an unchanged
 queue. Clients should use these values with `output=airplay` for remote audio
 information, not their local playback preferences.
 
-### OwnTone conversion rule
+### Native AirPlay playback
 
-`GET /config` includes `ownToneRuleSet` (string, default `""` for original audio).
-`PUT /owntone-settings` accepts `{ "ruleSet": "existing-rule-id" }`, or
-`{ "ruleSet": "" }` to use original audio. Missing/null/unknown IDs are rejected.
-The selection is persisted in the server settings database. A rule selected by
-OwnTone cannot be deleted until another selection or original audio is chosen.
+`GET /outputs` discovers IPv4 AirPlay 1 / 2 receivers and returns
+`{outputs: [{id, name, address, port, type, selected, requires_auth, unsupported_reason?}], protocols: ["airplay1", "airplay2"], maxSelected: 1}`.
+Discovery errors are returned in `error`; an empty list is not a simulated device.
 
-`POST /remote` with `action=start` always resolves its conversion rule from this
-server setting and ignores the client's `ruleSet`. It stores that effective rule
-with the remote queue for append/recovery and `audioParameters`. Changing the
-setting applies to the next queue start, not an already playing queue. There is
-no follow-client mode. Local streaming and local cache rules are unaffected.
-Existing ReplayGain behavior is unchanged and can require conversion even when
-original audio is selected. Web exposes this setting alongside conversion rule
-management; iOS has no management control for it.
+`POST /remote` keeps the queue/transport actions above. `outputs` accepts zero or one ID; multiple IDs are rejected with 400. Discover outputs before selecting one. `pair` is a two-step operation: send `{action:"pair", outputId:"...", pin:""}` to start, then send the same command with the displayed PIN within two minutes. Credentials are stored only on the server. A disconnected client does not cancel the server's active playback.
+
+`start` validates tracks and stores the local queue; connection/decoding then proceed asynchronously. Inspect `GET /remote` for `player.state` (`loading`, `play`, `pause`, `stop`) and `error`. `play` is the scheduled audible timeline, not a hardware acknowledgement. Authentication, transport and decoder failures leave the queue paused with an error. Pause/seek/track changes close and recreate the one transport session. There is no automatic reconnect loop.
+
+`GET /remote` always reports `configured:true`, meaning the native implementation is available, not that a receiver is connected. It adds `protocol:"airplay1"` or `protocol:"airplay2"` according to the selected output (defaults to AirPlay 2 without an output), `outputId`, and `transportFormat:{codec:"alac",sampleRate:44100,bitDepth:16,channels:2}`. Queue metadata is omitted when the supplied `queueVersion` matches. Existing `audioParameters` contains `ruleSet:""` plus the effective gain settings.
+
+Remote playback ignores the client's `ruleSet`: source audio is decoded directly with FFmpeg. `/tracks/{id}/stream?output=airplay` and the corresponding `audio-info` describe a normalized WAV preview with the same PCM format/gain, not the encrypted ALAC wire stream. Local conversion rules are unchanged.
+
+The previous external-backend URL configuration, conversion-rule setting and settings endpoint have been removed. Old database settings are ignored. `remote.json` queue entries remain readable; external queue item IDs are ignored. Restart restores paused state without a network connection or an armed sleep timer.
+
+Selecting an output stops the previous playback, preserves the queue, resets
+position and sleep timers, and reads the selected receiver's volume without
+sending RECORD or audio. `player.volume` is 0–100 or null when unreadable;
+clients must not show an old output's volume for null. A temporary control/timing
+SETUP may be needed to read initialVolume and is torn down immediately.
+Starting playback preserves the receiver volume unless the user explicitly set
+one while stopped. `stop` retains the queue and resets position to zero.
+
+Discovery merges `_airplay._tcp` and `_raop._tcp` services by device ID and prefers
+AirPlay 2. `type` identifies the selected protocol. Unsupported services
+remain visible with `unsupported_reason`. They cannot be selected or paired;
+clients should show the reason and disable their controls. Discovery includes
+receivers running on the same IPv4 host using multicast loopback.
+
+AirPlay 1 supports UDP ALAC with plaintext or RSA/AES encryption. Legacy PIN,
+password and FairPlay-only modes are not supported; `pair` applies to AirPlay 2.
+The capabilities response exposes `airplayProtocols:["airplay1","airplay2"]`.

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-type Config struct{ Listen, DataDir, CacheDir, FFprobe, FFmpeg, Origin, Token, OwnTone, PublicURL string }
+type Config struct{ Listen, DataDir, CacheDir, FFprobe, FFmpeg, Origin, Token string }
 
 func env(k, v string) string {
 	if s := os.Getenv(k); s != "" {
@@ -22,7 +22,7 @@ func env(k, v string) string {
 	return v
 }
 func ConfigFromEnv() Config {
-	return Config{Listen: env("HARMONIA_LISTEN", ":8090"), DataDir: env("HARMONIA_DATA", "./data"), CacheDir: os.Getenv("HARMONIA_CACHE"), FFprobe: env("HARMONIA_FFPROBE", "ffprobe"), FFmpeg: env("HARMONIA_FFMPEG", "ffmpeg"), Origin: env("HARMONIA_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173"), Token: os.Getenv("HARMONIA_TOKEN"), OwnTone: os.Getenv("HARMONIA_OWNTONE"), PublicURL: env("HARMONIA_PUBLIC_URL", "http://localhost:8090")}
+	return Config{Listen: env("HARMONIA_LISTEN", ":8090"), DataDir: env("HARMONIA_DATA", "./data"), CacheDir: os.Getenv("HARMONIA_CACHE"), FFprobe: env("HARMONIA_FFPROBE", "ffprobe"), FFmpeg: env("HARMONIA_FFMPEG", "ffmpeg"), Origin: env("HARMONIA_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173"), Token: os.Getenv("HARMONIA_TOKEN")}
 }
 
 type App struct {
@@ -54,7 +54,11 @@ func New(c Config) (*App, error) {
 	a := &App{config: c, store: s, waveformSlot: make(chan struct{}, 1)}
 	a.scanner = &Scanner{store: s, ffprobe: c.FFprobe, ffmpeg: c.FFmpeg, artDir: art}
 	a.cache = NewCache(c.CacheDir, c.FFmpeg, s)
-	a.remote = NewRemote(a)
+	a.remote, e = NewRemote(a)
+	if e != nil {
+		_ = s.Close()
+		return nil, e
+	}
 	return a, nil
 }
 func (a *App) Close() {
@@ -95,7 +99,7 @@ func (a *App) Handler() http.Handler {
 			for i := range st.Sources {
 				st.Sources[i].FolderTimes = nil
 			}
-			return map[string]any{"sources": st.Sources, "ruleSets": st.RuleSets, "cacheLimit": st.CacheLimit, "tagSeparators": st.TagSeparators, "ownToneRuleSet": st.OwnToneRuleSet}
+			return map[string]any{"sources": st.Sources, "ruleSets": st.RuleSets, "cacheLimit": st.CacheLimit, "tagSeparators": st.TagSeparators}
 		})
 	})
 	m.HandleFunc("GET /api/library/version", func(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +171,6 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("DELETE /api/cache", func(w http.ResponseWriter, r *http.Request) { a.cache.Clear(); respond(w, 200, a.cache.Status()) })
 	m.HandleFunc("PUT /api/cache", a.cacheSettings)
 	m.HandleFunc("PUT /api/tag-settings", a.tagSettings)
-	m.HandleFunc("PUT /api/owntone-settings", a.ownToneSettings)
 	m.HandleFunc("POST /api/rule-sets", a.ruleSets)
 	m.HandleFunc("PUT /api/rule-sets/{id}", a.ruleSets)
 	m.HandleFunc("DELETE /api/rule-sets/{id}", a.ruleSets)

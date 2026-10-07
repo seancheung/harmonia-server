@@ -112,7 +112,7 @@ func (c *Cache) Clear() {
 	c.trimLocked(0)
 }
 func (c *Cache) Acquire(ctx context.Context, t Track, input string, rule Conversion, gain *float64) (string, func(), error) {
-	data, _ := json.Marshal([]any{t.ID, t.Modified, t.Size, t.Revision, rule.Codec, rule.OutputBitrate, rule.OutputSampleRate, gain, rule.GainIdentity})
+	data, _ := json.Marshal([]any{t.ID, t.Modified, t.Size, t.Revision, rule.Codec, rule.OutputBitrate, rule.OutputSampleRate, rule.OutputChannels, gain, rule.GainIdentity})
 	hash := sha256.Sum256(data)
 	key := hex.EncodeToString(hash[:]) + "." + rule.Codec
 	c.mu.Lock()
@@ -161,6 +161,9 @@ func (c *Cache) Acquire(ctx context.Context, t Track, input string, rule Convers
 	}
 	if rule.OutputSampleRate > 0 {
 		args = append(args, "-ar", strconv.Itoa(rule.OutputSampleRate))
+	}
+	if rule.OutputChannels > 0 {
+		args = append(args, "-ac", strconv.Itoa(rule.OutputChannels))
 	}
 	if gain != nil {
 		args = append(args, "-af", fmt.Sprintf("volume=%.10f", *gain))
@@ -253,9 +256,7 @@ func (a *App) streamConversion(t Track, r *http.Request) (*Conversion, *float64)
 	if r.URL.Query().Get("output") == "airplay" {
 		preamp, _ := numeric(r.URL.Query().Get("preamp"))
 		g := ReplayGain(t, r.URL.Query().Get("gain"), math.Max(-30, math.Min(30, preamp)), r.URL.Query().Get("protect") != "false")
-		if rule == nil && g != 1 {
-			rule = &Conversion{Codec: "wav", OutputSampleRate: 44100}
-		}
+		rule = &Conversion{Codec: "wav", OutputSampleRate: 44100, OutputChannels: 2}
 		if rule != nil {
 			gain = &g
 			rule.GainIdentity = r.URL.Query().Get("gain") + ":" + r.URL.Query().Get("preamp") + ":" + r.URL.Query().Get("protect")
@@ -327,7 +328,7 @@ func (a *App) capabilities(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(formats)
 	_, probeErr := exec.LookPath(a.config.FFprobe)
 	encoders := a.encoders()
-	respond(w, 200, map[string]any{"formats": formats, "outputs": encoders, "bitrates": []int{64, 96, 128, 160, 192, 256, 320}, "sampleRates": []int{22050, 44100, 48000}, "ffprobe": probeErr == nil, "airplay": a.config.OwnTone != "", "gapless": "Web Audio decoded playback supports sample-accurate transitions; streamed media and AirPlay depend on the decoder/output."})
+	respond(w, 200, map[string]any{"formats": formats, "outputs": encoders, "bitrates": []int{64, 96, 128, 160, 192, 256, 320}, "sampleRates": []int{22050, 44100, 48000}, "ffprobe": probeErr == nil, "airplay": true, "airplayProtocols": []string{"airplay1", "airplay2"}, "airplayMaxOutputs": 1, "gapless": "Web Audio decoded playback supports sample-accurate transitions; streamed media and AirPlay depend on the decoder/output."})
 }
 func (a *App) encoders() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -388,9 +389,6 @@ func (a *App) ruleSets(w http.ResponseWriter, r *http.Request) {
 		}
 		for i, s := range st.RuleSets {
 			if s.ID == r.PathValue("id") {
-				if r.Method == "DELETE" && st.OwnToneRuleSet == s.ID {
-					return errors.New("conversion rule is used by OwnTone; change OwnTone settings first")
-				}
 				if r.Method == "DELETE" {
 					st.RuleSets = append(st.RuleSets[:i], st.RuleSets[i+1:]...)
 				} else {
@@ -407,38 +405,4 @@ func (a *App) ruleSets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 200, set)
-}
-
-func (a *App) ownToneSettings(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		RuleSet *string `json:"ruleSet"`
-	}
-	if !decode(w, r, &body) {
-		return
-	}
-	if body.RuleSet == nil {
-		problem(w, errors.New("ruleSet is required"))
-		return
-	}
-	err := a.store.UpdateMetadata(func(st *State) error {
-		if *body.RuleSet != "" {
-			found := false
-			for _, rule := range st.RuleSets {
-				if rule.ID == *body.RuleSet {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return errors.New("conversion rule not found")
-			}
-		}
-		st.OwnToneRuleSet = *body.RuleSet
-		return nil
-	})
-	if err != nil {
-		problem(w, err)
-		return
-	}
-	respond(w, 200, map[string]string{"ruleSet": *body.RuleSet})
 }

@@ -14,9 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -41,7 +39,6 @@ func TestCacheDirectoryConfig(t *testing.T) {
 		}
 		t.Setenv("HARMONIA_DATA", data)
 		t.Setenv("HARMONIA_CACHE", cache)
-		t.Setenv("HARMONIA_OWNTONE", "")
 		a, err := New(ConfigFromEnv())
 		if err != nil {
 			t.Fatal(err)
@@ -482,50 +479,6 @@ func TestCoverRefreshWithoutAudioChanges(t *testing.T) {
 		t.Fatal("deleted artwork remained")
 	}
 }
-func TestOwnToneTimerPreservesQueueAndAvoidsPrematurePause(t *testing.T) {
-	var mu sync.Mutex
-	calls := []string{}
-	own := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		calls = append(calls, r.Method+" "+r.URL.Path)
-		mu.Unlock()
-		if r.URL.Path == "/api/player" {
-			respond(w, 200, map[string]any{"state": "play", "item_id": 2, "item_progress_ms": 5000, "item_length_ms": 10000})
-			return
-		}
-		w.WriteHeader(204)
-	}))
-	defer own.Close()
-	a, e := New(Config{DataDir: t.TempDir(), FFprobe: "ffprobe", FFmpeg: "ffmpeg", OwnTone: own.URL})
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer a.Close()
-	a.remote.mu.Lock()
-	a.remote.saved = RemoteSaved{Queue: []string{"a", "b", "c"}, ItemIDs: []float64{1, 2, 3}, Index: 1}
-	a.remote.last = map[string]any{"state": "play", "item_id": float64(2)}
-	a.remote.mu.Unlock()
-	res := request(t, a, "POST", "/api/remote", map[string]any{"action": "timer", "deadline": 0, "finish": true})
-	if res.Code != 200 {
-		t.Fatal(res.Body.String())
-	}
-	a.remote.mu.Lock()
-	if len(a.remote.saved.Queue) != 3 || !a.remote.saved.Trimmed {
-		t.Fatal("timer discarded the saved queue")
-	}
-	a.remote.mu.Unlock()
-	mu.Lock()
-	defer mu.Unlock()
-	for _, call := range calls {
-		if call == "PUT /api/player/pause" || call == "DELETE /api/queue/items/2" {
-			t.Fatalf("timer interrupted current song: %s", call)
-		}
-	}
-	if !slices.Contains(calls, "DELETE /api/queue/items/1") || !slices.Contains(calls, "DELETE /api/queue/items/3") {
-		t.Fatal("following queue was not isolated")
-	}
-}
-
 func TestEmbeddedArtworkCopyAndRepair(t *testing.T) {
 	a := testApp(t)
 	root := t.TempDir()

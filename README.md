@@ -104,7 +104,7 @@ docker compose up -d
 
 To stop them, run `docker compose down`. Keep the deployment directory and project name unchanged so the same data volume is reused. Do not add `--volumes` unless you intend to delete the stored library data. Existing deployments with a different data volume must explicitly reuse that volume; this example does not migrate it.
 
-AirPlay additionally requires an OwnTone instance. Add `HARMONIA_OWNTONE` and `HARMONIA_PUBLIC_URL` under the server's environment; the public URL must be reachable from OwnTone, for example `http://192.168.1.20:8090`.
+AirPlay 1 / 2 audio is sent directly by Harmonia to one receiver on its LAN. The supplied Compose file uses Linux host networking for discovery and timing traffic; Docker Desktop multicast behavior must be verified separately.
 
 ## Native development
 
@@ -130,10 +130,8 @@ Run from the `harmonia-server` directory to automatically load its optional `.en
 | `HARMONIA_FFPROBE` | `ffprobe` | FFprobe executable path |
 | `HARMONIA_ORIGIN` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated permitted browser origins |
 | `HARMONIA_TOKEN` | empty | Optional shared bearer token |
-| `HARMONIA_OWNTONE` | empty | OwnTone base URL, e.g. `http://192.168.1.20:3689` |
-| `HARMONIA_PUBLIC_URL` | `http://localhost:8090` | Server URL reachable **from OwnTone** |
 
-This service is intended for a private network. For exposure outside it, configure the shared token and terminate HTTPS at a reverse proxy. Enter the same token in the player's connection settings. Audio and artwork URLs accept a `token` query parameter for browser media elements and OwnTone; avoid logging query strings at a reverse proxy. There are no user accounts or permissions.
+This service is intended for a private network. For exposure outside it, configure the shared token and terminate HTTPS at a reverse proxy. Enter the same token in the player's connection settings. Audio and artwork URLs accept a `token` query parameter for browser media elements; avoid logging query strings at a reverse proxy. There are no user accounts or permissions.
 
 ## Library behavior
 
@@ -160,20 +158,22 @@ Set `HARMONIA_CACHE` to place transcodes on a separate disk. In Docker, mount a 
 
 Rule sets are ordered. Every configured condition must match; the first matching rule selects output codec, bitrate in kbps and sample rate in Hz. No selection or no match serves the original file directly with HTTP range support. Capabilities come from installed FFmpeg encoders. A conversion failure is reported, not silently retried using another codec.
 
-The persistent cache defaults to 5 GiB and evicts least-recently-used inactive entries. A key includes the track generation, file signature and actual output settings, not the rule-set name. Browser transcodes never contain ReplayGain. AirPlay transcodes additionally distinguish gain settings. In-progress files are never considered complete cache entries. Active files survive manual cleanup and are removed on release. When a result does not fit the cache, it is served from a temporary file and removed after the request; conversion currently finishes before that file is served, so long files can have an initial preparation delay.
+The persistent cache defaults to 5 GiB and evicts least-recently-used inactive entries. A key includes the track generation, file signature and actual output settings, not the rule-set name. Browser transcodes never contain ReplayGain. AirPlay preview transcodes additionally distinguish gain settings and channel count. In-progress files are never considered complete cache entries. Active files survive manual cleanup and are removed on release. When a result does not fit the cache, it is served from a temporary file and removed after the request; conversion currently finishes before that file is served, so long files can have an initial preparation delay.
 
-## AirPlay through OwnTone
+## Native AirPlay 1 / 2 (single receiver)
 
-Queue additions submit one URL at a time with a two-minute timeout per item and a 6,000-character encoded request target. Playback starts as soon as the selected item is added, while later items continue loading; the initial seek is applied at that point. Queue reads use pages of 100 items. Replacing a queue snapshots the existing OwnTone items and playback position before clearing; confirmed failed additions attempt to remove partial batches and restore the previous queue and position. Lost or timed-out add responses leave the queue untouched because OwnTone may still be processing the request; check OwnTone before retrying. Recovery errors are reported explicitly when OwnTone remains unavailable. Queue commands are serialized with background polling. Remote status responses include full queue metadata only when the client's queue version differs (clients without a version still receive the full queue).
+Harmonia owns the remote queue, playback clock and FFmpeg decoder and sends audio directly over a native AirPlay 1 (RAOP) or AirPlay 2 session. No external AirPlay daemon or AirPlay library is used. The Go implementation lives in `internal/airplay`; `golang.org/x/crypto` supplies cryptographic primitives only. AirPlay 2 is preferred when both services are advertised. Multiroom is not supported.
 
-Harmonia uses the [OwnTone JSON API](https://owntone.github.io/owntone-server/json-api/) for device discovery, PIN pairing, multiple outputs and independent device playback. OwnTone must run on a system and network capable of discovering the speakers. Windows Chrome does not need native AirPlay support.
+1. Run Harmonia on the receiver's IPv4 LAN and open **Playback devices** in the web player.
+2. Select one discovered AirPlay output. Discovery uses the service's advertised port and capabilities, not model-name rules.
+3. For protected outputs, click **Pair** to initiate pairing, then enter the PIN. Credentials and the sender identity are stored in `airplay-identity.json` with mode 0600.
+4. Start a track. `loading` covers connection, authentication and initial buffering; `play` describes the sender's scheduled audible timeline, not receiver-confirmed sound.
 
-1. Install and configure OwnTone on the speaker network.
-2. Set `HARMONIA_OWNTONE` to its base URL.
-3. Set `HARMONIA_PUBLIC_URL` to an address OwnTone can reach. `localhost` is only correct if both processes share that network namespace; Docker Desktop commonly uses `http://host.docker.internal:8090`.
-4. Choose devices in the player's output dialog and complete any required PIN pairing.
+AirPlay 1 supports plaintext or RSA/AES encrypted RAOP over UDP; password/PIN and FairPlay-only legacy receivers are not yet supported. AirPlay 2 retains HAP authentication and encrypted transport. The current transport is realtime ALAC, stereo 44.1 kHz/16-bit, with verbatim ALAC frames. FFmpeg decodes source files and applies ReplayGain once; client conversion rules do not control the transport format. Queue changes happen locally without URL submission or a second media server. Pause, seek and track changes recreate the single session; sample-accurate gapless transitions are not yet provided. Closing a page does not stop the server. Queue/output/position persist, but a server restart restores paused state and requires discovery before reconnecting. Connection failures stop playback with an explicit error; retries are user-initiated.
 
-OwnTone requests Harmonia stream URLs. When no conversion rule matches and the effective ReplayGain multiplier is 1, Harmonia serves the original file (including MP3 and FLAC) with range/HEAD support, without invoking FFmpeg. A matching conversion rule still applies; non-unity gain without a matching rule uses cached 44.1 kHz PCM WAV. Clearing the playback queue does not clear the transcode cache. Server-side ReplayGain is applied once to these outputs, independently of the chosen conversion rule set; the browser's local gain path is stopped. Remote queue and timer state survive closing the page. Finish-current-track timers temporarily leave only the current item in OwnTone, while preserving the complete Harmonia queue for restoration. Device codec support and transport determine AirPlay gapless behavior. Physical speaker pairing, multiroom synchronization and device-specific behavior require acceptance testing with the target hardware; they are not simulated as successful when OwnTone is unavailable.
+The sender implements transient HAP and persistent PIN pairing, encrypted RTSP/event channels, RTP audio/retransmission, NTP timing and a unicast PTP sender clock selected from advertised capabilities. For PTP, UDP 319/320 must be available and bindable by the server (Linux deployments may require `CAP_NET_BIND_SERVICE`). The receiver must be able to reach the server's negotiated UDP timing/control ports. Merely exposing HTTP port 8090 through a Docker bridge is insufficient. IPv6-only receivers, peer-to-peer/AWDL discovery, buffered type-103 audio, receiver-clock following and MediaRemote now-playing UI are outside this first implementation.
+
+This is an experimental native sender. Automated tests exercise an in-process receiver over real loopback TCP/UDP, including pairing, authenticated control/audio, event acknowledgement and retransmission. They do not establish interoperability with physical receivers or their firmware. Hardware playback and PTP interoperability still require acceptance testing. Refer to `AIRPLAY.md` for implementation boundaries and the test procedure.
 
 ## API overview
 
@@ -193,7 +193,7 @@ go vet ./...
 docker build --target test -t harmonia-server:test .
 ```
 
-The Docker test stage runs `go test -race -cover ./...` and `go vet ./...` with full FFmpeg support. Native integration tests skip when that support is absent. Tests cover grouped filters, sort boundaries, album identity, path globs, atomic playlist edits, missing entries, history, scanner identity, artwork refresh, cache leases and OwnTone timer commands.
+The Docker test stage runs `go test -race -cover ./...` and `go vet ./...` with full FFmpeg support. Native integration tests skip when that support is absent. Tests cover grouped filters, sort boundaries, album identity, path globs, atomic playlist edits, missing entries, history, scanner identity, artwork refresh, cache leases and native AirPlay queue/timer commands.
 
 GitHub Actions tests pull requests. Pushes to `main` and `v*` tags additionally build and publish linux/amd64 and linux/arm64 images to `ghcr.io/seancheung/harmonia-server`. Copy this directory as the repository root; no root-level workspace configuration is needed.
 

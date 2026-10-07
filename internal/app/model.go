@@ -85,6 +85,7 @@ type Playlist struct {
 	Tracks []string `json:"tracks"`
 }
 type Conversion struct {
+	OutputChannels   int      `json:"-"`
 	Formats          []string `json:"formats,omitempty"`
 	GainIdentity     string   `json:"-"`
 	Format           string   `json:"format"`
@@ -102,14 +103,13 @@ type RuleSet struct {
 	Rules []Conversion `json:"rules"`
 }
 type State struct {
-	OwnToneRuleSet string          `json:"ownToneRuleSet"`
-	Sources        []Source        `json:"sources"`
-	Tracks         []Track         `json:"tracks"`
-	Playlists      []Playlist      `json:"playlists"`
-	RuleSets       []RuleSet       `json:"ruleSets"`
-	CacheLimit     int64           `json:"cacheLimit"`
-	TagSeparators  string          `json:"tagSeparators"`
-	Sessions       map[string]bool `json:"sessions"`
+	Sources       []Source        `json:"sources"`
+	Tracks        []Track         `json:"tracks"`
+	Playlists     []Playlist      `json:"playlists"`
+	RuleSets      []RuleSet       `json:"ruleSets"`
+	CacheLimit    int64           `json:"cacheLimit"`
+	TagSeparators string          `json:"tagSeparators"`
+	Sessions      map[string]bool `json:"sessions"`
 }
 
 func newID() string { b := make([]byte, 16); _, _ = rand.Read(b); return hex.EncodeToString(b) }

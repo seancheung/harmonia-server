@@ -3,7 +3,8 @@ module github.com/harmonia/harmonia-server
 go 1.27.1
 
 require (
-	golang.org/x/sys v0.47.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.58.0
 )
 

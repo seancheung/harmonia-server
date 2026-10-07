@@ -27,7 +27,7 @@ func TestOriginalAudioMediaRequests(t *testing.T) {
 			a.cache.ffmpeg = filepath.Join(root, "ffmpeg-must-not-run")
 			for _, query := range []string{"gain=off", "gain=track", "gain=album", "gain=off&preamp=12&protect=true"} {
 				for _, method := range []string{"GET", "HEAD"} {
-					req := httptest.NewRequest(method, "/api/tracks/song/stream?output=airplay&"+query, nil)
+					req := httptest.NewRequest(method, "/api/tracks/song/stream?"+query, nil)
 					if method == "GET" {
 						req.Header.Set("Range", "bytes=0-1")
 					}
@@ -38,7 +38,7 @@ func TestOriginalAudioMediaRequests(t *testing.T) {
 						wantStatus, wantBody = 206, "01"
 					}
 					if res.Code != wantStatus || res.Body.String() != wantBody || res.Header().Get("Content-Type") != format.contentType {
-						t.Fatalf("AirPlay passthrough %s %s: %d %s", method, query, res.Code, res.Body.String())
+						t.Fatalf("Original passthrough %s %s: %d %s", method, query, res.Code, res.Body.String())
 					}
 				}
 			}
@@ -56,10 +56,10 @@ func TestOriginalAudioMediaRequests(t *testing.T) {
 					t.Fatalf("required conversion bypassed: %s (%d)", query, res.Code)
 				}
 			}
-			// Gain and preamp cancel out: still serve the original even with tags.
+			// Remote audio is normalized even when gain and preamp cancel out.
 			resUnity := request(t, a, "GET", "/api/tracks/song/stream?output=airplay&gain=track&preamp=-6", nil)
-			if resUnity.Code != 200 || resUnity.Body.String() != "0123456789" {
-				t.Fatal("unity gain should bypass conversion")
+			if resUnity.Code != 422 {
+				t.Fatal("remote unity gain must still normalize the audio format")
 			}
 			req := httptest.NewRequest("GET", "/api/tracks/song/stream", nil)
 			req.Header.Set("Range", "bytes=0-1")

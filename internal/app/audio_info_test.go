@@ -40,6 +40,7 @@ func TestAudioInfoMatchesActualStream(t *testing.T) {
 		{"?ruleSet=unmatched", "pcm_s24le", 48000, 24, false},
 		{"?ruleSet=aac", "aac", 44100, 0, true},
 		{"?output=airplay&gain=track", "pcm_s16le", 44100, 16, true},
+		{"?output=airplay&gain=off&ruleSet=aac", "pcm_s16le", 44100, 16, true},
 	} {
 		t.Run(test.query, func(t *testing.T) {
 			res := request(t, a, "GET", "/api/tracks/song/audio-info"+test.query, nil)
