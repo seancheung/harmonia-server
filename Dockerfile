@@ -12,8 +12,9 @@ RUN go test -race -cover ./... && go vet ./...
 FROM alpine:3.23
 RUN apk add --no-cache ffmpeg ca-certificates tzdata && mkdir /data
 COPY --from=build /harmonia /usr/local/bin/harmonia
+COPY docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh
 ENV HARMONIA_DATA=/data HARMONIA_LISTEN=:8090
 VOLUME ["/data"]
 EXPOSE 8090
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -q -O /dev/null http://127.0.0.1:8090/api/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s CMD ["/bin/sh", "/usr/local/bin/docker-healthcheck.sh"]
 ENTRYPOINT ["harmonia"]

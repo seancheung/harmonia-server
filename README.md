@@ -10,17 +10,19 @@ This revision uses a new relational schema and intentionally does not migrate th
 
 ## Start with GHCR
 
+These examples target Docker Engine on Linux with host networking for AirPlay. Publishing only HTTP through a bridge is insufficient for multicast discovery and receiver-initiated UDP timing/control traffic. Do not add `-p` / `ports` to the server in host mode.
+
 ```sh
 docker pull ghcr.io/seancheung/harmonia-server:latest
 docker run -d --name harmonia-server --restart unless-stopped \
-  -p 8090:8090 \
+  --network host \
   -v harmonia-data:/data \
   -v /absolute/path/to/music:/music:ro \
   -e HARMONIA_ORIGIN=http://localhost:8080 \
   ghcr.io/seancheung/harmonia-server:latest
 ```
 
-For a source build, run `docker build -t harmonia-server .` and use `harmonia-server` instead of the GHCR image in the run command. Alternatively, set `MUSIC_PATH` in a local `.env` file and run `docker compose up -d --build`. The container includes FFmpeg/FFprobe and runs as UID/GID 10001. Grant that user read access to music and write access to a bind-mounted data directory, or use the named volume above.
+For a source build, run `docker build -t harmonia-server .` and use `harmonia-server` instead of the GHCR image in the run command. Alternatively, set `MUSIC_PATH` in a local `.env` file and run `docker compose up -d --build`. The container includes FFmpeg/FFprobe. If you override the container user, grant it read access to music and write access to data/cache directories, plus permission to bind UDP 319/320 for AirPlay PTP.
 
 The example allows the player at `http://localhost:8080`. For a different hostname or another computer, set `HARMONIA_ORIGIN` to the actual player origin and enter the browser-reachable server address in the player's connection settings.
 
@@ -28,7 +30,7 @@ The example allows the player at `http://localhost:8080`. For a different hostna
 
 The workflow publishes `ghcr.io/seancheung/harmonia-server` for Linux amd64 and arm64 after checks pass. Pushes to `main` update both `:main` and `:latest`; a stable release tag such as `v1.2.3` produces `:1.2.3` and also updates `:latest`. Prerelease tags do not update `:latest`. Use an existing version tag or digest for a pinned deployment. Images are available only after a successful publishing workflow.
 
-To update, pull the chosen image and recreate the container with the same ports, environment variables and volume mounts. Keep the `harmonia-data` volume to preserve library data.
+To update, pull the chosen image and recreate the container with the same network mode, environment variables and volume mounts. Keep the `harmonia-data` volume to preserve library data.
 
 Public GHCR packages require no login. For private packages, run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` and authenticate with a personal access token (classic) with `read:packages` scope. The repository owner must configure package visibility for public pulls. See the [GHCR authentication documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
@@ -45,9 +47,9 @@ services:
   server:
     image: ghcr.io/seancheung/harmonia-server:latest
     restart: unless-stopped
-    ports:
-      - "8090:8090"
+    network_mode: host
     environment:
+      HARMONIA_LISTEN: "${HARMONIA_LISTEN:-:8090}"
       HARMONIA_ORIGIN: "http://${HARMONIA_HOST:-localhost}:8080"
       HARMONIA_TOKEN: "${HARMONIA_TOKEN:-}"
     volumes:
@@ -74,10 +76,11 @@ Create a `.env` file beside it:
 ```dotenv
 MUSIC_PATH=/absolute/path/to/music
 HARMONIA_HOST=localhost
+HARMONIA_LISTEN=:8090
 HARMONIA_TOKEN=
 ```
 
-Use an existing absolute music directory. On Windows with Docker Desktop, use a path such as `MUSIC_PATH=D:/Music`. The server runs as UID/GID 10001 and needs read access to the mounted music. The named `data` volume holds library metadata, artwork and cache.
+Use an existing absolute music directory readable by the container user. The named `data` volume holds library metadata, artwork and cache.
 
 For access from another computer, replace `localhost` with the Docker host's LAN IP or hostname, such as `HARMONIA_HOST=192.168.1.20`. This value has no scheme or port. If authentication is desired, set a shared token and enter the same token in the player.
 
@@ -104,7 +107,9 @@ docker compose up -d
 
 To stop them, run `docker compose down`. Keep the deployment directory and project name unchanged so the same data volume is reused. Do not add `--volumes` unless you intend to delete the stored library data. Existing deployments with a different data volume must explicitly reuse that volume; this example does not migrate it.
 
-AirPlay 1 / 2 audio is sent directly by Harmonia to one receiver on its LAN. The supplied Compose file uses Linux host networking for discovery and timing traffic; Docker Desktop multicast behavior must be verified separately.
+AirPlay 1 / 2 audio is sent directly by Harmonia to one receiver on its LAN. Both the supplied Compose file and the examples above use Linux host networking. Allow mDNS discovery and receiver-initiated UDP timing/control traffic through the host firewall, including UDP 319/320 for PTP; those ports must be available. The web player can remain on a bridge network.
+
+Docker Desktop host networking is an opt-in feature with different limitations from Docker Engine on Linux; see the [Docker host networking documentation](https://docs.docker.com/engine/network/drivers/host/). AirPlay discovery and playback on Docker Desktop require separate verification. For AirPlay on Windows/macOS, use the native server or a Linux host with direct LAN access. For browser-only playback, bridge networking with HTTP port publishing is an option, but does not provide the AirPlay connectivity described here.
 
 ## Native development
 
@@ -133,6 +138,12 @@ Run from the `harmonia-server` directory to automatically load its optional `.en
 
 This service is intended for a private network. For exposure outside it, configure the shared token and terminate HTTPS at a reverse proxy. Enter the same token in the player's connection settings. Audio and artwork URLs accept a `token` query parameter for browser media elements; avoid logging query strings at a reverse proxy. There are no user accounts or permissions.
 
+### Custom HTTP port and container health
+
+Set `HARMONIA_LISTEN=:9090` in the Compose `.env` file (or pass `-e HARMONIA_LISTEN=:9090` to `docker run`) and recreate the container. In host mode this changes the host port directly; no port mapping is needed. Update the player's server URL to `http://<server-host>:9090`. `HARMONIA_ORIGIN` remains the web player's origin, not the API address.
+
+The image health check reads `HARMONIA_LISTEN` at runtime and calls the unauthenticated `/api/health` endpoint. Empty/unset values default to `:8090`, matching the server. Wildcard listeners (`:9090`, `0.0.0.0:9090`, `[::]:9090`) are checked through loopback; explicit bind addresses are checked as configured. HTTP health does not verify AirPlay discovery or receiver connectivity.
+
 ## Library behavior
 
 - Scanning is manual. Ordinary scans inspect file size and nanosecond modification time; full scans reread every allowed file and invalidate its conversion generation.
@@ -154,7 +165,7 @@ Playback reports use an idempotency session ID. A session counts at 15 seconds o
 
 ## Conversion and caching
 
-Set `HARMONIA_CACHE` to place transcodes on a separate disk. In Docker, mount a dedicated volume at `/cache` and set `HARMONIA_CACHE=/cache`; UID 10001 needs write access. Use a directory exclusively for Harmonia's transcode cache because cache cleanup manages its contents. Restart after changing this setting. Existing cache files are not moved automatically. SQLite, artwork and remote state remain under `HARMONIA_DATA`.
+Set `HARMONIA_CACHE` to place transcodes on a separate disk. In Docker, mount a dedicated volume at `/cache` and set `HARMONIA_CACHE=/cache`; the container user needs write access. Use a directory exclusively for Harmonia's transcode cache because cache cleanup manages its contents. Restart after changing this setting. Existing cache files are not moved automatically. SQLite, artwork and remote state remain under `HARMONIA_DATA`.
 
 Rule sets are ordered. Every configured condition must match; the first matching rule selects output codec, bitrate in kbps and sample rate in Hz. No selection or no match serves the original file directly with HTTP range support. Capabilities come from installed FFmpeg encoders. A conversion failure is reported, not silently retried using another codec.
 
