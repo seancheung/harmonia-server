@@ -49,6 +49,7 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
+      HARMONIA_DISABLE_AIRPLAY: "${HARMONIA_DISABLE_AIRPLAY:-false}"
       HARMONIA_LISTEN: "${HARMONIA_LISTEN:-:8090}"
       HARMONIA_ORIGIN: "http://${HARMONIA_HOST:-localhost}:8080"
       HARMONIA_TOKEN: "${HARMONIA_TOKEN:-}"
@@ -129,6 +130,7 @@ Run from the `harmonia-server` directory to automatically load its optional `.en
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `HARMONIA_LISTEN` | `:8090` | HTTP listen address |
+| `HARMONIA_DISABLE_AIRPLAY` | `false` | Disable AirPlay discovery, pairing and remote playback (`true` or `1`); restart/recreate the server to apply |
 | `HARMONIA_DATA` | `./data` (`/data` in Docker) | Writable application data |
 | `HARMONIA_CACHE` | `<HARMONIA_DATA>/cache` | Dedicated writable transcode cache directory |
 | `HARMONIA_FFMPEG` | `ffmpeg` | Full FFmpeg executable path |
@@ -172,6 +174,8 @@ Rule sets are ordered. Every configured condition must match; the first matching
 The persistent cache defaults to 5 GiB and evicts least-recently-used inactive entries. A key includes the track generation, file signature and actual output settings, not the rule-set name. Browser transcodes never contain ReplayGain. AirPlay preview transcodes additionally distinguish gain settings and channel count. In-progress files are never considered complete cache entries. Active files survive manual cleanup and are removed on release. When a result does not fit the cache, it is served from a temporary file and removed after the request; conversion currently finishes before that file is served, so long files can have an initial preparation delay.
 
 ## Native AirPlay 1 / 2 (single receiver)
+
+To disable AirPlay (for example, when OwnTone already uses UDP 319/320), set `HARMONIA_DISABLE_AIRPLAY=true` in `.env` for native/Compose deployments, or pass `-e HARMONIA_DISABLE_AIRPLAY=true` to `docker run`. Restart the native server or recreate the container. Browser playback and library APIs remain available. AirPlay is not initialized and opens no discovery or timing sockets; existing pairing and remote queue files are preserved. Set it back to `false` and restart to re-enable. Boolean values follow Go's `strconv.ParseBool` (`true`/`false`, `1`/`0`, and supported case variants); empty/unset values default to `false`, and invalid values log a warning and use `false`.
 
 Harmonia owns the remote queue, playback clock and FFmpeg decoder and sends audio directly over a native AirPlay 1 (RAOP) or AirPlay 2 session. No external AirPlay daemon or AirPlay library is used. The Go implementation lives in `internal/airplay`; `golang.org/x/crypto` supplies cryptographic primitives only. AirPlay 2 is preferred when both services are advertised. Multiroom is not supported.
 

@@ -328,7 +328,13 @@ func (a *App) capabilities(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(formats)
 	_, probeErr := exec.LookPath(a.config.FFprobe)
 	encoders := a.encoders()
-	respond(w, 200, map[string]any{"formats": formats, "outputs": encoders, "bitrates": []int{64, 96, 128, 160, 192, 256, 320}, "sampleRates": []int{22050, 44100, 48000}, "ffprobe": probeErr == nil, "airplay": true, "airplayProtocols": []string{"airplay1", "airplay2"}, "airplayMaxOutputs": 1, "gapless": "Web Audio decoded playback supports sample-accurate transitions; streamed media and AirPlay depend on the decoder/output."})
+	protocols := []string{}
+	maxOutputs := 0
+	if !a.config.DisableAirPlay {
+		protocols = []string{"airplay1", "airplay2"}
+		maxOutputs = 1
+	}
+	respond(w, 200, map[string]any{"formats": formats, "outputs": encoders, "bitrates": []int{64, 96, 128, 160, 192, 256, 320}, "sampleRates": []int{22050, 44100, 48000}, "ffprobe": probeErr == nil, "airplay": !a.config.DisableAirPlay, "airplayProtocols": protocols, "airplayMaxOutputs": maxOutputs, "gapless": "Web Audio decoded playback supports sample-accurate transitions; streamed media and AirPlay depend on the decoder/output."})
 }
 func (a *App) encoders() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

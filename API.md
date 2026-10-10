@@ -213,7 +213,9 @@ Discovery errors are returned in `error`; an empty list is not a simulated devic
 
 `start` validates tracks and stores the local queue; connection/decoding then proceed asynchronously. Inspect `GET /remote` for `player.state` (`loading`, `play`, `pause`, `stop`) and `error`. `play` is the scheduled audible timeline, not a hardware acknowledgement. Authentication, transport and decoder failures leave the queue paused with an error. Pause/seek/track changes close and recreate the one transport session. There is no automatic reconnect loop.
 
-`GET /remote` always reports `configured:true`, meaning the native implementation is available, not that a receiver is connected. It adds `protocol:"airplay1"` or `protocol:"airplay2"` according to the selected output (defaults to AirPlay 2 without an output), `outputId`, and `transportFormat:{codec:"alac",sampleRate:44100,bitDepth:16,channels:2}`. Queue metadata is omitted when the supplied `queueVersion` matches. Existing `audioParameters` contains `ruleSet:""` plus the effective gain settings.
+When AirPlay is enabled, `GET /remote` reports `configured:true`, meaning the native implementation is available, not that a receiver is connected. It adds `protocol:"airplay1"` or `protocol:"airplay2"` according to the selected output (defaults to AirPlay 2 without an output), `outputId`, and `transportFormat:{codec:"alac",sampleRate:44100,bitDepth:16,channels:2}`. Queue metadata is omitted when the supplied `queueVersion` matches. Existing `audioParameters` contains `ruleSet:""` plus the effective gain settings.
+
+With `HARMONIA_DISABLE_AIRPLAY=true`, `GET /remote` returns `{configured:false, player:{state:"stop"}, queue:[]}` and `GET /outputs` returns `{outputs:[], protocols:[], maxSelected:0}` without discovery. `POST /remote` returns HTTP 503 with an explanatory error for all commands. `/capabilities` reports `airplay:false`, `airplayProtocols:[]`, and `airplayMaxOutputs:0`. Authentication rules remain unchanged.
 
 Remote playback ignores the client's `ruleSet`: source audio is decoded directly with FFmpeg. `/tracks/{id}/stream?output=airplay` and the corresponding `audio-info` describe a normalized WAV preview with the same PCM format/gain, not the encrypted ALAC wire stream. Local conversion rules are unchanged.
 
@@ -235,4 +237,4 @@ receivers running on the same IPv4 host using multicast loopback.
 
 AirPlay 1 supports UDP ALAC with plaintext or RSA/AES encryption. Legacy PIN,
 password and FairPlay-only modes are not supported; `pair` applies to AirPlay 2.
-The capabilities response exposes `airplayProtocols:["airplay1","airplay2"]`.
+When AirPlay is enabled, the capabilities response exposes `airplayProtocols:["airplay1","airplay2"]`; disabling it returns an empty list.

@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-type Config struct{ Listen, DataDir, CacheDir, FFprobe, FFmpeg, Origin, Token string }
+type Config struct {
+	Listen, DataDir, CacheDir, FFprobe, FFmpeg, Origin, Token string
+	DisableAirPlay                                            bool
+}
 
 func env(k, v string) string {
 	if s := os.Getenv(k); s != "" {
@@ -22,7 +25,11 @@ func env(k, v string) string {
 	return v
 }
 func ConfigFromEnv() Config {
-	return Config{Listen: env("HARMONIA_LISTEN", ":8090"), DataDir: env("HARMONIA_DATA", "./data"), CacheDir: os.Getenv("HARMONIA_CACHE"), FFprobe: env("HARMONIA_FFPROBE", "ffprobe"), FFmpeg: env("HARMONIA_FFMPEG", "ffmpeg"), Origin: env("HARMONIA_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173"), Token: os.Getenv("HARMONIA_TOKEN")}
+	disabled, err := strconv.ParseBool(env("HARMONIA_DISABLE_AIRPLAY", "false"))
+	if err != nil {
+		log.Printf("Invalid HARMONIA_DISABLE_AIRPLAY value; using false")
+	}
+	return Config{Listen: env("HARMONIA_LISTEN", ":8090"), DataDir: env("HARMONIA_DATA", "./data"), CacheDir: os.Getenv("HARMONIA_CACHE"), FFprobe: env("HARMONIA_FFPROBE", "ffprobe"), FFmpeg: env("HARMONIA_FFMPEG", "ffmpeg"), Origin: env("HARMONIA_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173"), Token: os.Getenv("HARMONIA_TOKEN"), DisableAirPlay: disabled}
 }
 
 type App struct {
@@ -54,10 +61,12 @@ func New(c Config) (*App, error) {
 	a := &App{config: c, store: s, waveformSlot: make(chan struct{}, 1)}
 	a.scanner = &Scanner{store: s, ffprobe: c.FFprobe, ffmpeg: c.FFmpeg, artDir: art}
 	a.cache = NewCache(c.CacheDir, c.FFmpeg, s)
-	a.remote, e = NewRemote(a)
-	if e != nil {
-		_ = s.Close()
-		return nil, e
+	if !c.DisableAirPlay {
+		a.remote, e = NewRemote(a)
+		if e != nil {
+			_ = s.Close()
+			return nil, e
+		}
 	}
 	return a, nil
 }
@@ -68,7 +77,9 @@ func (a *App) Close() {
 	}
 	a.scanner.mu.Unlock()
 	a.scanner.wg.Wait()
-	a.remote.Close()
+	if a.remote != nil {
+		a.remote.Close()
+	}
 	_ = a.store.Close()
 }
 func respond(w http.ResponseWriter, status int, v any) {
@@ -175,9 +186,21 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("PUT /api/rule-sets/{id}", a.ruleSets)
 	m.HandleFunc("DELETE /api/rule-sets/{id}", a.ruleSets)
 	m.HandleFunc("GET /api/capabilities", a.capabilities)
-	m.HandleFunc("GET /api/outputs", a.remote.Outputs)
-	m.HandleFunc("GET /api/remote", a.remote.Status)
-	m.HandleFunc("POST /api/remote", a.remote.Command)
+	if a.remote != nil {
+		m.HandleFunc("GET /api/outputs", a.remote.Outputs)
+		m.HandleFunc("GET /api/remote", a.remote.Status)
+		m.HandleFunc("POST /api/remote", a.remote.Command)
+	} else {
+		m.HandleFunc("GET /api/outputs", func(w http.ResponseWriter, r *http.Request) {
+			respond(w, 200, map[string]any{"outputs": []any{}, "protocols": []string{}, "maxSelected": 0})
+		})
+		m.HandleFunc("GET /api/remote", func(w http.ResponseWriter, r *http.Request) {
+			respond(w, 200, map[string]any{"configured": false, "player": map[string]any{"state": "stop"}, "queue": []any{}})
+		})
+		m.HandleFunc("POST /api/remote", func(w http.ResponseWriter, r *http.Request) {
+			respond(w, http.StatusServiceUnavailable, map[string]string{"error": "AirPlay is disabled by HARMONIA_DISABLE_AIRPLAY"})
+		})
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {

@@ -4,6 +4,7 @@ services:
     # Linux: multicast discovery and receiver-initiated timing traffic need LAN access.
     network_mode: host
     environment:
+      HARMONIA_DISABLE_AIRPLAY: ${HARMONIA_DISABLE_AIRPLAY:-false}
       HARMONIA_LISTEN: ${HARMONIA_LISTEN:-:8090}
       HARMONIA_ORIGIN: ${HARMONIA_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
       HARMONIA_TOKEN: ${HARMONIA_TOKEN:-}
