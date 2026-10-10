@@ -175,6 +175,8 @@ The persistent cache defaults to 5 GiB and evicts least-recently-used inactive e
 
 ## Native AirPlay 1 / 2 (single receiver)
 
+AirPlay shuffle plays each distinct queued track once per round. List repeat starts another shuffled round only after that round completes, avoiding the same song across the boundary when alternatives exist. The server owns this order for automatic transitions and the player's shuffle Next button. Round progress is saved with the remote queue; starting a replacement queue or toggling shuffle resets it. Explicitly selecting a song or going back can replay a song intentionally.
+
 To disable AirPlay (for example, when OwnTone already uses UDP 319/320), set `HARMONIA_DISABLE_AIRPLAY=true` in `.env` for native/Compose deployments, or pass `-e HARMONIA_DISABLE_AIRPLAY=true` to `docker run`. Restart the native server or recreate the container. Browser playback and library APIs remain available. AirPlay is not initialized and opens no discovery or timing sockets; existing pairing and remote queue files are preserved. Set it back to `false` and restart to re-enable. Boolean values follow Go's `strconv.ParseBool` (`true`/`false`, `1`/`0`, and supported case variants); empty/unset values default to `false`, and invalid values log a warning and use `false`.
 
 Harmonia owns the remote queue, playback clock and FFmpeg decoder and sends audio directly over a native AirPlay 1 (RAOP) or AirPlay 2 session. No external AirPlay daemon or AirPlay library is used. The Go implementation lives in `internal/airplay`; `golang.org/x/crypto` supplies cryptographic primitives only. AirPlay 2 is preferred when both services are advertised. Multiroom is not supported.

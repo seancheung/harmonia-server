@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
@@ -45,6 +44,7 @@ type RemoteSaved struct {
 	Protect         bool     `json:"protect"`
 	Repeat          string   `json:"repeat"`
 	Shuffle         bool     `json:"shuffle"`
+	ShuffleVisited  []string `json:"shuffleVisited,omitempty"`
 	Deadline        int64    `json:"deadline"`
 	Finish          bool     `json:"finish"`
 	Waiting         bool     `json:"waiting"`
@@ -98,6 +98,7 @@ func NewRemote(a *App) (*Remote, error) {
 		return nil, fmt.Errorf("read remote queue: %w", e)
 	}
 	r.saved.Index = max(0, min(r.saved.Index, max(0, len(r.saved.Queue)-1)))
+	r.markShuffleLocked()
 	r.saved.Position = max(0, r.saved.Position)
 	r.saved.Volume = max(0, min(100, r.saved.Volume))
 	r.saved.Waiting = false
@@ -147,6 +148,7 @@ func (r *Remote) persist() error {
 	r.mu.Lock()
 	saved := r.saved
 	saved.Queue = append([]string{}, saved.Queue...)
+	saved.ShuffleVisited = append([]string{}, saved.ShuffleVisited...)
 	r.mu.Unlock()
 	return atomicJSON(filepath.Join(r.app.config.DataDir, "remote.json"), saved)
 }
@@ -279,9 +281,8 @@ func (r *Remote) advanceLocked(manual bool) bool {
 	if !manual && r.saved.Repeat == "single" {
 		return true
 	}
-	if r.saved.Shuffle && n > 1 {
-		r.saved.Index = (r.saved.Index + 1 + rand.IntN(n-1)) % n
-		return true
+	if r.saved.Shuffle {
+		return r.advanceShuffleLocked()
 	}
 	if r.saved.Index+1 < n {
 		r.saved.Index++
@@ -633,6 +634,7 @@ func (r *Remote) command(b remoteCommand) error {
 		r.mu.Lock()
 		r.saved.Queue = append([]string{}, b.IDs...)
 		r.saved.Index = b.Index
+		r.resetShuffleLocked()
 		r.saved.Position = b.Position
 		r.resetHistoryLocked(b.Position)
 		r.saved.Gain = b.Gain
@@ -674,6 +676,7 @@ func (r *Remote) command(b remoteCommand) error {
 		r.cancelPlayback()
 		r.mu.Lock()
 		r.saved.Queue = []string{}
+		r.resetShuffleLocked()
 		r.saved.Index = 0
 		r.saved.Position = 0
 		r.saved.Deadline = 0
@@ -722,6 +725,7 @@ func (r *Remote) command(b remoteCommand) error {
 		r.cancelPlayback()
 		r.mu.Lock()
 		r.saved.Index = index
+		r.markShuffleLocked()
 		r.resetHistoryLocked(0)
 		r.saved.Position = 0
 		r.saved.Waiting = false
@@ -745,6 +749,9 @@ func (r *Remote) command(b remoteCommand) error {
 		r.saved.Queue = q
 		if len(saved.Queue) > 0 && position <= r.saved.Index {
 			r.saved.Index += len(b.IDs)
+		}
+		if len(saved.Queue) == 0 {
+			r.resetShuffleLocked()
 		}
 		r.mu.Unlock()
 	case "move":
@@ -782,6 +789,11 @@ func (r *Remote) command(b remoteCommand) error {
 		}
 		if current {
 			r.saved.Index = min(r.saved.Index, max(0, len(r.saved.Queue)-1))
+			if r.saved.Shuffle && len(r.saved.Queue) > 0 {
+				if !r.advanceShuffleLocked() {
+					playing = false
+				}
+			}
 			r.resetHistoryLocked(0)
 			r.saved.Position = 0
 			r.saved.Waiting = false
@@ -820,7 +832,10 @@ func (r *Remote) command(b remoteCommand) error {
 		r.mu.Unlock()
 	case "shuffle":
 		r.mu.Lock()
-		r.saved.Shuffle = b.Shuffle
+		if r.saved.Shuffle != b.Shuffle {
+			r.saved.Shuffle = b.Shuffle
+			r.resetShuffleLocked()
+		}
 		r.mu.Unlock()
 	case "timer":
 		if b.Deadline < 0 {

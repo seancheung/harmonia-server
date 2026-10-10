@@ -114,6 +114,31 @@ func remoteWait(t *testing.T, r *Remote, condition func() bool) {
 	}
 	t.Fatal("remote state did not converge")
 }
+func TestRemoteShuffleAutomaticPlayback(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	remoteOK(t, a, map[string]any{"action": "shuffle", "shuffle": true})
+	remoteOK(t, a, map[string]any{"action": "repeat", "repeat": "all"})
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b", "c"}, "index": 0})
+	last := ""
+	for round := 0; round < 2; round++ {
+		seen := map[string]bool{}
+		for i := 0; i < 3; i++ {
+			session := awaitSession(t, sessions)
+			id := session.metadata.ID
+			if seen[id] || id == last {
+				t.Fatalf("round %d repeated %s", round, id)
+			}
+			seen[id] = true
+			last = id
+			if round == 1 && i == 2 {
+				remoteOK(t, a, map[string]any{"action": "repeat", "repeat": "off"})
+			}
+			close(session.finish)
+		}
+	}
+	remoteWait(t, a.remote, func() bool { return a.remote.state == "stop" })
+}
+
 func TestRemoteSingleDevicePausedTransferAndSeek(t *testing.T) {
 	a, sessions := remoteFixture(t)
 	res := request(t, a, "POST", "/api/remote", map[string]any{"action": "outputs", "outputs": []string{"speaker", "other"}})
