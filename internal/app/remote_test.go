@@ -434,3 +434,193 @@ func TestRemoteAutomaticQueueAndManualAppend(t *testing.T) {
 		t.Error("manual append was capped or moved selection")
 	}
 }
+
+func TestServerGainIndependentOfPlaybackClients(t *testing.T) {
+	a, _ := remoteFixture(t)
+	remoteOK(t, a, map[string]any{"action": "gain", "gain": "auto", "preamp": -3.5, "protect": true})
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}, "index": 1, "position": 1234, "playing": false, "gainContext": "album", "gain": "off", "preamp": 20, "protect": false})
+	a.remote.mu.Lock()
+	saved := a.remote.saved
+	a.remote.mu.Unlock()
+	if saved.Gain != "auto" || saved.Preamp != -3.5 || !saved.Protect || remoteGainMode(saved) != "album" {
+		t.Fatal("client overwrote server gain", saved)
+	}
+	remoteOK(t, a, map[string]any{"action": "gain", "gain": "track", "preamp": 2, "protect": false})
+	a.remote.mu.Lock()
+	updated := a.remote.saved
+	a.remote.mu.Unlock()
+	if updated.Index != saved.Index || updated.Position != saved.Position || updated.PlaybackSession != saved.PlaybackSession || fmt.Sprint(updated.ShuffleVisited) != fmt.Sprint(saved.ShuffleVisited) {
+		t.Fatal("settings changed playback progress")
+	}
+	restored, err := NewRemote(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.saved.Gain != "track" || restored.saved.Preamp != 2 || restored.saved.Protect {
+		t.Fatal("server settings not persisted")
+	}
+	for _, body := range []map[string]any{
+		{"action": "gain", "gain": "invalid", "preamp": 0},
+		{"action": "gain", "gain": "off", "preamp": 31},
+	} {
+		if request(t, a, "POST", "/api/remote", body).Code != 400 {
+			t.Fatal("invalid gain accepted")
+		}
+	}
+	res := request(t, a, "GET", "/api/remote", nil)
+	var status struct {
+		ReplayGain struct {
+			Gain    string
+			Preamp  float64
+			Protect bool
+		}
+		AudioParameters struct{ Gain string }
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.ReplayGain.Gain != "track" || status.ReplayGain.Preamp != 2 || status.AudioParameters.Gain != "track" {
+		t.Fatal(res.Body.String())
+	}
+}
+
+func TestServerGainUpdatePreservesActiveRound(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	remoteOK(t, a, map[string]any{"action": "shuffle", "shuffle": true})
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}, "gainContext": "album"})
+	awaitSession(t, sessions)
+	a.remote.mu.Lock()
+	session := a.remote.saved.PlaybackSession
+	a.remote.mu.Unlock()
+	remoteOK(t, a, map[string]any{"action": "gain", "gain": "auto", "preamp": -2, "protect": true})
+	awaitSession(t, sessions)
+	a.remote.mu.Lock()
+	defer a.remote.mu.Unlock()
+	if a.remote.saved.PlaybackSession != session || !a.remote.saved.Shuffle || len(a.remote.saved.ShuffleVisited) != 1 || a.remote.saved.ShuffleVisited[0] != "a" || remoteGainMode(a.remote.saved) != "album" {
+		t.Fatal("gain update reset active round")
+	}
+}
+
+func TestRemoteFailurePolicySkipsMissingTrackAndPersists(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	remoteOK(t, a, map[string]any{"action": "failure", "failure": "skip"})
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}, "playing": false})
+	if err := a.store.Update(func(st *State) error { st.Tracks[0].Path = "missing.wav"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	remoteOK(t, a, map[string]any{"action": "play"})
+	awaitSession(t, sessions)
+	a.remote.mu.Lock()
+	index := a.remote.saved.Index
+	a.remote.mu.Unlock()
+	if index != 1 {
+		t.Fatal("did not skip missing track")
+	}
+	remoteOK(t, a, map[string]any{"action": "pause"})
+	restored, err := NewRemote(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if restored.saved.Failure != "skip" {
+		t.Fatal("failure policy not saved")
+	}
+	if request(t, a, "POST", "/api/remote", map[string]any{"action": "failure", "failure": "bad"}).Code != 400 {
+		t.Fatal("invalid policy accepted")
+	}
+}
+
+func TestRemoteSkipAllFailedIsBounded(t *testing.T) {
+	for _, shuffle := range []bool{false, true} {
+		for _, repeat := range []string{"off", "single", "all"} {
+			r := &Remote{saved: RemoteSaved{Queue: []string{"a", "b", "a", "c"}, Failure: "skip", Repeat: repeat, Shuffle: shuffle}}
+			r.resetShuffleLocked()
+			attempts := 0
+			for {
+				attempts++
+				if !r.skipFailed(remoteTrackError{errors.New("decode failed")}) {
+					break
+				}
+				if attempts > 3 {
+					t.Fatal("retried failed tracks forever")
+				}
+			}
+			if attempts != 3 || r.state != "stop" {
+				t.Fatalf("shuffle=%v repeat=%s attempts=%d state=%s", shuffle, repeat, attempts, r.state)
+			}
+		}
+	}
+	r := &Remote{saved: RemoteSaved{Queue: []string{"a", "b"}, Failure: "stop"}}
+	if r.skipFailed(remoteTrackError{errors.New("failed")}) || r.saved.Index != 0 {
+		t.Fatal("stop policy skipped")
+	}
+}
+
+func TestRemoteSkipAllMissingSourcesStops(t *testing.T) {
+	a, _ := remoteFixture(t)
+	remoteOK(t, a, map[string]any{"action": "failure", "failure": "skip"})
+	remoteOK(t, a, map[string]any{"action": "repeat", "repeat": "all"})
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b", "c"}, "playing": false})
+	if err := a.store.Update(func(st *State) error {
+		for i := range st.Tracks {
+			st.Tracks[i].Path = "missing.wav"
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := request(t, a, "POST", "/api/remote", map[string]any{"action": "play"})
+	if res.Code != 400 {
+		t.Fatal(res.Body.String())
+	}
+	a.remote.mu.Lock()
+	defer a.remote.mu.Unlock()
+	if len(a.remote.failed) != 3 || a.remote.state != "stop" {
+		t.Fatal("all-failed playback did not stop")
+	}
+}
+
+func TestRemoteSkipDoesNotRetryReceiverErrors(t *testing.T) {
+	r := &Remote{saved: RemoteSaved{Queue: []string{"a", "b"}, Failure: "skip", Repeat: "all"}}
+	if r.skipFailed(errors.New("receiver disconnected")) || r.saved.Index != 0 {
+		t.Fatal("receiver failure must not consume queue")
+	}
+}
+
+func TestRemoteStartSkipsStaleSource(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	remoteOK(t, a, map[string]any{"action": "failure", "failure": "skip"})
+	if err := a.store.Update(func(st *State) error { st.Tracks[0].Path = "missing.wav"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}})
+	awaitSession(t, sessions)
+	a.remote.mu.Lock()
+	index := a.remote.saved.Index
+	a.remote.mu.Unlock()
+	if index != 1 {
+		t.Fatal("start did not skip stale source")
+	}
+}
+
+func TestRemoteDecodeFailureSkipsToNextTrack(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	root := a.store.Read().Sources[0].Path
+	if err := os.WriteFile(filepath.Join(root, "broken.wav"), []byte("invalid audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.Update(func(st *State) error { st.Tracks[0].Path = "broken.wav"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	remoteOK(t, a, map[string]any{"action": "failure", "failure": "skip"})
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}})
+	broken := awaitSession(t, sessions)
+	close(broken.finish)
+	awaitSession(t, sessions)
+	a.remote.mu.Lock()
+	defer a.remote.mu.Unlock()
+	if a.remote.saved.Index != 1 {
+		t.Fatal("decode failure was not skipped")
+	}
+}

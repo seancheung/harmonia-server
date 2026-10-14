@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,13 +34,15 @@ func ConfigFromEnv() Config {
 }
 
 type App struct {
-	pages        pageCache
-	config       Config
-	store        *Store
-	scanner      *Scanner
-	cache        *Cache
-	remote       *Remote
-	waveformSlot chan struct{}
+	playbackMu       sync.Mutex
+	playbackSettings PlaybackSettings
+	pages            pageCache
+	config           Config
+	store            *Store
+	scanner          *Scanner
+	cache            *Cache
+	remote           *Remote
+	waveformSlot     chan struct{}
 }
 
 func New(c Config) (*App, error) {
@@ -59,6 +62,10 @@ func New(c Config) (*App, error) {
 		return nil, e
 	}
 	a := &App{config: c, store: s, waveformSlot: make(chan struct{}, 1)}
+	if e = a.loadPlaybackSettings(); e != nil {
+		s.Close()
+		return nil, e
+	}
 	a.scanner = &Scanner{store: s, ffprobe: c.FFprobe, ffmpeg: c.FFmpeg, artDir: art}
 	a.cache = NewCache(c.CacheDir, c.FFmpeg, s)
 	if !c.DisableAirPlay {
@@ -182,6 +189,8 @@ func (a *App) Handler() http.Handler {
 	m.HandleFunc("DELETE /api/cache", func(w http.ResponseWriter, r *http.Request) { a.cache.Clear(); respond(w, 200, a.cache.Status()) })
 	m.HandleFunc("PUT /api/cache", a.cacheSettings)
 	m.HandleFunc("PUT /api/tag-settings", a.tagSettings)
+	m.HandleFunc("GET /api/playback-settings", a.getPlaybackSettings)
+	m.HandleFunc("PUT /api/playback-settings", a.putPlaybackSettings)
 	m.HandleFunc("POST /api/rule-sets", a.ruleSets)
 	m.HandleFunc("PUT /api/rule-sets/{id}", a.ruleSets)
 	m.HandleFunc("DELETE /api/rule-sets/{id}", a.ruleSets)

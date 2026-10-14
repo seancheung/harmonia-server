@@ -42,6 +42,7 @@ type RemoteSaved struct {
 	GainContext     string   `json:"gainContext"`
 	Preamp          float64  `json:"preamp"`
 	Protect         bool     `json:"protect"`
+	Failure         string   `json:"failure"`
 	Repeat          string   `json:"repeat"`
 	Shuffle         bool     `json:"shuffle"`
 	ShuffleVisited  []string `json:"shuffleVisited,omitempty"`
@@ -53,6 +54,10 @@ type remoteIdentity struct {
 	ID          string                         `json:"id"`
 	Credentials map[string]airplay.Credentials `json:"credentials"`
 }
+
+// Only track/source failures are skippable; receiver and transport failures stop.
+type remoteTrackError struct{ error }
+
 type remoteEnd struct {
 	generation uint64
 	err        error
@@ -64,6 +69,7 @@ type Remote struct {
 	volumeKnown, volumePending bool
 	readVolume                 func(context.Context, airplay.Device, string, *airplay.Credentials) (int, error)
 	app                        *App
+	failed                     map[string]bool
 	saved                      RemoteSaved
 	identity                   remoteIdentity
 	state, lastError           string
@@ -84,7 +90,7 @@ type Remote struct {
 }
 
 func NewRemote(a *App) (*Remote, error) {
-	r := &Remote{app: a, state: "stop", devices: map[string]airplay.Device{}, end: make(chan remoteEnd, 16), done: make(chan struct{}), saved: RemoteSaved{Volume: 50, Repeat: "off", GainContext: "track", Protect: true}, discover: airplay.Discover}
+	r := &Remote{app: a, state: "stop", devices: map[string]airplay.Device{}, end: make(chan remoteEnd, 16), done: make(chan struct{}), saved: RemoteSaved{Volume: 50, Failure: "stop", Repeat: "off", Gain: "off", GainContext: "track", Protect: true}, discover: airplay.Discover}
 	r.pairingRequired = map[string]bool{}
 	r.readVolume = airplay.ReadVolume
 	r.connect = func(ctx context.Context, d airplay.Device, id string, c *airplay.Credentials) (remoteSession, error) {
@@ -97,6 +103,8 @@ func NewRemote(a *App) (*Remote, error) {
 	} else if !errors.Is(e, os.ErrNotExist) {
 		return nil, fmt.Errorf("read remote queue: %w", e)
 	}
+	settings := a.currentPlaybackSettings()
+	r.saved.Gain, r.saved.Preamp, r.saved.Protect, r.saved.Failure = settings.Gain, settings.Preamp, settings.Protect, settings.Failure
 	r.saved.Index = max(0, min(r.saved.Index, max(0, len(r.saved.Queue)-1)))
 	r.markShuffleLocked()
 	r.saved.Position = max(0, r.saved.Position)
@@ -212,10 +220,13 @@ func (r *Remote) loop() {
 				r.mu.Lock()
 				if event.err != nil {
 					r.lastError = event.err.Error()
-					if errors.Is(event.err, airplay.ErrPairingRequired) {
-						r.pairingRequired[r.saved.Output] = true
+					r.mu.Unlock()
+					if r.skipFailed(event.err) {
+						_ = r.startWithPolicy()
 					}
+					r.mu.Lock()
 				} else {
+					r.failed = nil
 					// Honor an expired deadline at EOF even before the timer's next tick.
 					if r.saved.Deadline > 0 && time.Now().UnixMilli() >= r.saved.Deadline {
 						r.saved.Deadline = 0
@@ -228,7 +239,7 @@ func (r *Remote) loop() {
 						r.state = "pause"
 					} else if r.advanceLocked(false) {
 						r.mu.Unlock()
-						startErr := r.start()
+						startErr := r.startWithPolicy()
 						r.mu.Lock()
 						if startErr != nil {
 							r.lastError = startErr.Error()
@@ -338,7 +349,7 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 			length = tracks[0].Duration * 1000
 		}
 	}
-	result := map[string]any{"configured": true, "protocol": protocol, "player": map[string]any{"state": state, "item_progress_ms": saved.Position, "item_length_ms": length, "repeat": saved.Repeat, "shuffle": saved.Shuffle, "volume": volume}, "error": lastError, "deadline": saved.Deadline, "waiting": saved.Waiting, "finish": saved.Finish, "index": saved.Index, "gainContext": saved.GainContext, "playedIds": saved.ShuffleVisited, "queueVersion": version, "outputId": saved.Output, "audioParameters": map[string]any{"ruleSet": "", "gain": saved.Gain, "preamp": saved.Preamp, "protect": saved.Protect}, "transportFormat": map[string]any{"codec": "alac", "sampleRate": airplay.SampleRate, "bitDepth": 16, "channels": 2}}
+	result := map[string]any{"configured": true, "protocol": protocol, "player": map[string]any{"state": state, "item_progress_ms": saved.Position, "item_length_ms": length, "repeat": saved.Repeat, "shuffle": saved.Shuffle, "volume": volume}, "error": lastError, "deadline": saved.Deadline, "waiting": saved.Waiting, "finish": saved.Finish, "index": saved.Index, "gainContext": saved.GainContext, "playedIds": saved.ShuffleVisited, "queueVersion": version, "outputId": saved.Output, "audioParameters": map[string]any{"ruleSet": "", "gain": remoteGainMode(saved), "preamp": saved.Preamp, "protect": saved.Protect}, "failure": saved.Failure, "replayGain": map[string]any{"gain": saved.Gain, "preamp": saved.Preamp, "protect": saved.Protect}, "transportFormat": map[string]any{"codec": "alac", "sampleRate": airplay.SampleRate, "bitDepth": 16, "channels": 2}}
 	if req.URL.Query().Get("queueVersion") != version {
 		result["queue"] = r.app.store.Tracks(saved.Queue)
 	}
@@ -365,7 +376,7 @@ func (r *Remote) start() error {
 	}
 	track, path, e := trackFromState(r.app.store.Read(), saved.Queue[saved.Index])
 	if e != nil {
-		return e
+		return remoteTrackError{e}
 	}
 	if track.Duration > 0 && float64(saved.Position) >= track.Duration*1000 {
 		return errors.New("seek position is beyond track duration")
@@ -435,7 +446,7 @@ func (r *Remote) start() error {
 				r.volumePending = false
 				r.mu.Unlock()
 			}
-			gain := ReplayGain(track, saved.Gain, math.Max(-30, math.Min(30, saved.Preamp)), saved.Protect)
+			gain := ReplayGain(track, remoteGainMode(saved), math.Max(-30, math.Min(30, saved.Preamp)), saved.Protect)
 			args := []string{"-nostdin", "-v", "error", "-threads", "1", "-ss", fmt.Sprintf("%.3f", float64(saved.Position)/1000), "-i", path, "-map", "0:a:0", "-vn", "-af", fmt.Sprintf("volume=%.9f", gain), "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1"}
 			cmd := exec.CommandContext(ctx, r.app.config.FFmpeg, args...)
 			stdout, e := cmd.StdoutPipe()
@@ -473,7 +484,7 @@ func (r *Remote) start() error {
 				return e
 			}
 			if waitErr != nil {
-				return fmt.Errorf("audio decode: %w: %s", waitErr, stderr.String())
+				return remoteTrackError{fmt.Errorf("audio decode: %w: %s", waitErr, stderr.String())}
 			}
 			return nil
 		}
@@ -504,13 +515,13 @@ func (l *limitedLog) String() string { return string(l.b) }
 
 type remoteCommand struct {
 	Action      string   `json:"action"`
+	Failure     string   `json:"failure"`
 	Playing     *bool    `json:"playing"`
 	IDs         []string `json:"ids"`
 	Outputs     []string `json:"outputs"`
 	Index       int      `json:"index"`
 	Position    int      `json:"position"`
 	Volume      int      `json:"volume"`
-	RuleSet     string   `json:"ruleSet"`
 	Gain        string   `json:"gain"`
 	GainContext string   `json:"gainContext"`
 	Preamp      float64  `json:"preamp"`
@@ -553,11 +564,29 @@ func (r *Remote) command(b remoteCommand) error {
 	saved := r.saved
 	playing := r.state == "play" || r.state == "loading"
 	r.mu.Unlock()
+	if b.Action == "start" || b.Action == "play" || b.Action == "select" || b.Action == "next" || b.Action == "previous" {
+		r.mu.Lock()
+		r.failed = nil
+		r.mu.Unlock()
+	}
 	validate := func(ids []string) error {
 		if len(ids) > 10000 {
 			return errors.New("queue exceeds 10000 tracks")
 		}
 		st := r.app.store.Read()
+		if b.Action == "start" && saved.Failure == "skip" {
+			known := make(map[string]bool, len(st.Tracks))
+			for _, track := range st.Tracks {
+				known[track.ID] = true
+			}
+			for _, id := range ids {
+				if !known[id] {
+					return errors.New("track unavailable")
+				}
+			}
+			// Resolve files at playback time so a stale/missing file can be skipped.
+			return nil
+		}
 		for _, id := range ids {
 			if _, _, e := trackFromState(st, id); e != nil {
 				return e
@@ -630,9 +659,6 @@ func (r *Remote) command(b remoteCommand) error {
 		if e := validate(b.IDs); e != nil {
 			return e
 		}
-		if b.Gain != "" && b.Gain != "off" && b.Gain != "track" && b.Gain != "album" {
-			return errors.New("invalid gain mode")
-		}
 		r.cancelPlayback()
 		r.mu.Lock()
 		r.saved.Queue = append([]string{}, b.IDs...)
@@ -640,22 +666,19 @@ func (r *Remote) command(b remoteCommand) error {
 		r.resetShuffleLocked()
 		r.saved.Position = b.Position
 		r.resetHistoryLocked(b.Position)
-		r.saved.Gain = b.Gain
 		r.saved.GainContext = "track"
 		if b.GainContext == "album" {
 			r.saved.GainContext = "album"
 		}
-		r.saved.Preamp = max(-30, min(30, b.Preamp))
-		r.saved.Protect = b.Protect
 		r.saved.Waiting = false
 		r.state = "pause"
 		r.lastError = ""
 		r.mu.Unlock()
 		if b.Playing == nil || *b.Playing {
-			return r.start()
+			return r.startWithPolicy()
 		}
 	case "play":
-		return r.start()
+		return r.startWithPolicy()
 	case "pause", "local":
 		r.cancelPlayback()
 		if b.Action == "local" {
@@ -705,7 +728,7 @@ func (r *Remote) command(b remoteCommand) error {
 		r.saved.Seeked = true
 		r.mu.Unlock()
 		if playing {
-			return r.start()
+			return r.startWithPolicy()
 		}
 	case "select", "next", "previous":
 		index := b.Index
@@ -733,7 +756,7 @@ func (r *Remote) command(b remoteCommand) error {
 		r.saved.Position = 0
 		r.saved.Waiting = false
 		r.mu.Unlock()
-		return r.start()
+		return r.startWithPolicy()
 	case "append":
 		if len(saved.Queue)+len(b.IDs) > 10000 {
 			return errors.New("queue exceeds 10000 tracks")
@@ -807,7 +830,7 @@ func (r *Remote) command(b remoteCommand) error {
 		}
 		r.mu.Unlock()
 		if current && playing && !empty {
-			return r.start()
+			return r.startWithPolicy()
 		}
 	case "volume":
 		if b.Volume < 0 || b.Volume > 100 {
@@ -840,6 +863,14 @@ func (r *Remote) command(b remoteCommand) error {
 			r.resetShuffleLocked()
 		}
 		r.mu.Unlock()
+	case "failure":
+		settings := r.app.currentPlaybackSettings()
+		settings.Failure = b.Failure
+		return r.app.savePlaybackSettings(settings)
+	case "gain":
+		settings := r.app.currentPlaybackSettings()
+		settings.Gain, settings.Preamp, settings.Protect = b.Gain, b.Preamp, b.Protect
+		return r.app.savePlaybackSettings(settings)
 	case "timer":
 		if b.Deadline < 0 {
 			return errors.New("invalid timer deadline")
@@ -907,4 +938,64 @@ func (r *Remote) pairDevice(b remoteCommand) error {
 	delete(r.pairingRequired, b.OutputID)
 	r.mu.Unlock()
 	return r.saveIdentity()
+}
+
+func remoteGainMode(saved RemoteSaved) string {
+	if saved.Gain == "auto" {
+		if saved.GainContext == "album" {
+			return "album"
+		}
+		return "track"
+	}
+	return saved.Gain
+}
+
+// startWithPolicy handles synchronous source failures as well as async stream errors.
+func (r *Remote) startWithPolicy() error {
+	for {
+		err := r.start()
+		if err == nil {
+			return nil
+		}
+		r.cancelPlayback()
+		if !r.skipFailed(err) {
+			return err
+		}
+	}
+}
+
+func (r *Remote) skipFailed(err error) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastError = err.Error()
+	if errors.Is(err, airplay.ErrPairingRequired) {
+		r.pairingRequired[r.saved.Output] = true
+		return false
+	}
+	var trackError remoteTrackError
+	if !errors.As(err, &trackError) {
+		return false
+	}
+	if r.saved.Failure != "skip" || r.saved.Waiting || (r.saved.Deadline > 0 && time.Now().UnixMilli() >= r.saved.Deadline) {
+		return false
+	}
+	if len(r.saved.Queue) == 0 || r.saved.Index >= len(r.saved.Queue) {
+		return false
+	}
+	if r.failed == nil {
+		r.failed = map[string]bool{}
+	}
+	r.failed[r.saved.Queue[r.saved.Index]] = true
+	for i := 0; i < len(r.saved.Queue); i++ {
+		if !r.advanceLocked(true) {
+			break
+		}
+		if !r.failed[r.saved.Queue[r.saved.Index]] {
+			r.saved.Position = 0
+			r.resetHistoryLocked(0)
+			return true
+		}
+	}
+	r.state = "stop"
+	return false
 }

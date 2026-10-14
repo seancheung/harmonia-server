@@ -122,7 +122,7 @@ Examples:
 ```
 
 ```json
-{"action":"start","ids":["track-a","track-b"],"index":0,"ruleSet":"","gain":"album","preamp":0,"protect":true}
+{"action":"start","ids":["track-a","track-b"],"index":0,"gainContext":"album"}
 ```
 
 ```json
@@ -238,3 +238,19 @@ receivers running on the same IPv4 host using multicast loopback.
 AirPlay 1 supports UDP ALAC with plaintext or RSA/AES encryption. Legacy PIN,
 password and FairPlay-only modes are not supported; `pair` applies to AirPlay 2.
 When AirPlay is enabled, the capabilities response exposes `airplayProtocols:["airplay1","airplay2"]`; disabling it returns an empty list.
+
+### Server ReplayGain settings
+
+AirPlay uses server-owned ReplayGain preferences, persisted in `playback-settings.json` independently of client-local playback preferences. `GET /remote` includes `replayGain: {gain, preamp, protect}` even when queue metadata is omitted. `gain` is `off`, `auto`, `track`, or `album`; `preamp` is -30 through +30 dB. Defaults are off, 0 dB, and clipping protection enabled. Existing installations retain the last saved remote gain values on upgrade.
+
+Save with `POST /remote` and `{action:"gain", gain:"auto", preamp:0, protect:true}`. All clients share these server settings. Playback `start` commands ignore client `gain`, `preamp`, and `protect` fields; only `gainContext` (track/album) supplies context for the server's automatic mode. `audioParameters.gain` reports the resolved mode for the current selection. Changing settings during playback restarts the stream at its current position without resetting the queue, shuffle round, or listening session. Paused playback stays paused. Client-local preference changes do not affect AirPlay.
+
+### Independent playback modes and failure policy
+
+AirPlay repeat/shuffle are server-owned persistent playback state. Clients read them when selecting server output and never copy local modes into the server implicitly. Explicit remote repeat/shuffle controls still update these server modes. Returning to local output restores the client's separately saved local modes. Playback commands omit `ruleSet`; it remains ignored for legacy clients.
+
+`GET /remote` includes `failure: "stop" | "skip"`. Save it with `POST /remote` and `{action:"failure", failure:"skip"}`. Default is `stop`. Skip handles missing/unreadable sources and audio decode failures, bypasses single repeat for the failed track, and never retries a failed track during the same consecutive failure sequence. All candidates failing stops playback even with repeat-all/shuffle. Successful track completion or an explicit playback/navigation command clears that failure sequence. Receiver, pairing and transport errors still stop playback; changing songs cannot fix the output connection. Timer/end-of-track stop requests take precedence over skipping.
+
+### Independent server playback settings API
+
+`GET /playback-settings` and `PUT /playback-settings` are available even when AirPlay is disabled or no receiver is configured. Both use `{gain:"off"|"auto"|"track"|"album", preamp:-30..30, protect:boolean, failure:"stop"|"skip"}`. PUT validates and atomically persists the entire group to `playback-settings.json`; invalid input changes nothing. This file is authoritative on restart. Existing `remote.json` settings are migrated when readable and no independent settings file exists. The legacy remote gain/failure commands update the same settings for compatibility. If playback is active, changed gain is applied once while preserving its queue and position; receiver errors are reported in playback status and do not prevent saving settings.
