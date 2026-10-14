@@ -159,7 +159,7 @@ The image health check reads `HARMONIA_LISTEN` at runtime and calls the unauthen
 
 ## Filtering, playlists and history
 
-`GET /api/browse` validates nested `all`/`any` groups, up to 30 total nodes and four group levels. Folder rules match a source ID plus a full directory path and an optional recursive flag. Search covers music metadata and filenames, excluding server file paths. Sorting is stable, with missing values always last. Pagination happens after filtering and sorting; playback selections use `/api/queue/query` with a 100-song limit.
+`GET /api/browse` validates nested `all`/`any` groups, up to 30 total nodes and four group levels. Folder rules match a source ID plus a full directory path and an optional recursive flag. Search covers music metadata and filenames, excluding server file paths. Sorting is stable, with missing values always last. Pagination happens after filtering and sorting; playback selections use `/api/queue/query` with a 500-song automatic loading limit.
 
 Ordinary playlists store ordered IDs. An addition containing any duplicate fails atomically. The `move` action uses a one-based position in the complete list. Smart playlists store the same rule tree plus a sort field and direction, and evaluate against current metadata, favorites and counts.
 
@@ -233,4 +233,4 @@ The next ordinary library scan rereads metadata created by older versions once, 
 
 ### Page APIs
 
-Current Web and iOS clients load `/api/config`, `/api/home` and paginated `/api/browse` responses with ETag revalidation. `/api/library/version` detects changes without downloading tracks. `/api/queue/query` caps Play all at 100 songs on the server. Playlist summaries omit membership IDs. See [API.md](API.md#page-based-clients) for query fields, limits and cache behavior. The old full-library, incremental-sync, track-query and membership endpoints have been removed. Upgrade both clients together with this server.
+Current Web and iOS clients load `/api/config`, `/api/home` and paginated `/api/browse` responses with ETag revalidation. `/api/library/version` detects changes without downloading tracks. `/api/queue/query` caps Play all at 500 songs on the server. Playlist summaries omit membership IDs. See [API.md](API.md#page-based-clients) for query fields, limits and cache behavior. The old full-library, incremental-sync, track-query and membership endpoints have been removed. Upgrade both clients together with this server.

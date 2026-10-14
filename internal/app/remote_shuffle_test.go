@@ -73,3 +73,44 @@ func TestRemoteShuffleSingleAndModeChanges(t *testing.T) {
 		t.Fatal("manual next should bypass single repeat")
 	}
 }
+
+func TestRemotePlayedRoundInSequentialMode(t *testing.T) {
+	r := &Remote{saved: RemoteSaved{Queue: []string{"a", "b", "c"}, Index: 1, Repeat: "all"}}
+	r.resetShuffleLocked()
+	if len(r.saved.ShuffleVisited) != 1 || r.saved.ShuffleVisited[0] != "b" {
+		t.Fatal("marked unplayed prefix")
+	}
+	r.advanceLocked(false)
+	if len(r.saved.ShuffleVisited) != 2 {
+		t.Fatal("lost played track")
+	}
+	r.advanceLocked(false)
+	if len(r.saved.ShuffleVisited) != 1 || r.saved.ShuffleVisited[0] != "a" {
+		t.Fatal("did not reset at wrap")
+	}
+}
+
+func TestRemoteStatusIncludesPlayedIDsWithoutQueue(t *testing.T) {
+	a := seedBrowse(t)
+	a.remote.mu.Lock()
+	a.remote.saved.Queue = []string{"000", "001"}
+	a.remote.saved.Index = 1
+	a.remote.saved.ShuffleVisited = []string{"000", "001"}
+	a.remote.mu.Unlock()
+	var first struct{ QueueVersion string }
+	res := request(t, a, "GET", "/api/remote", nil)
+	if err := json.Unmarshal(res.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	res = request(t, a, "GET", "/api/remote?queueVersion="+first.QueueVersion, nil)
+	var status struct {
+		Queue     []Track
+		PlayedIDs []string `json:"playedIds"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Queue != nil || len(status.PlayedIDs) != 2 || status.PlayedIDs[0] != "000" {
+		t.Fatal(res.Body.String())
+	}
+}

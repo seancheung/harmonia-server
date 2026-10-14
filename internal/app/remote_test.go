@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -397,5 +398,39 @@ func TestOutputPairingIsShownOnlyWhenRequired(t *testing.T) {
 				t.Fatalf("%s requires_auth=%v", device.ID, device.RequiresAuth)
 			}
 		}
+	}
+}
+
+func TestRemoteAutomaticQueueAndManualAppend(t *testing.T) {
+	a, _ := remoteFixture(t)
+	if err := a.store.Update(func(st *State) error {
+		base := st.Tracks[0]
+		st.Tracks = nil
+		for i := 0; i < 650; i++ {
+			track := base
+			track.ID = fmt.Sprintf("%03d", i)
+			track.Title = track.ID
+			st.Tracks = append(st.Tracks, track)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := request(t, a, "GET", browseURL("/api/queue/query", BrowseQuery{Section: "songs", Sort: "title", Start: "500"}), nil)
+	var q struct{ IDs []string }
+	if err := json.Unmarshal(res.Body.Bytes(), &q); err != nil {
+		t.Fatal(err)
+	}
+	remoteOK(t, a, map[string]any{"action": "start", "ids": q.IDs, "index": 499, "playing": false})
+	a.remote.mu.Lock()
+	if len(a.remote.saved.Queue) != 500 || a.remote.saved.Queue[0] != "001" || a.remote.saved.Queue[a.remote.saved.Index] != "500" {
+		t.Error("wrong AirPlay queue or start index")
+	}
+	a.remote.mu.Unlock()
+	remoteOK(t, a, map[string]any{"action": "append", "ids": []string{"649"}, "position": 500})
+	a.remote.mu.Lock()
+	defer a.remote.mu.Unlock()
+	if len(a.remote.saved.Queue) != 501 || a.remote.saved.Queue[500] != "649" || a.remote.saved.Index != 499 {
+		t.Error("manual append was capped or moved selection")
 	}
 }

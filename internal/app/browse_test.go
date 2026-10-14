@@ -67,12 +67,12 @@ func TestBrowsePagesAndQueueLimit(t *testing.T) {
 	}
 	res := request(t, a, "GET", browseURL("/api/queue/query", BrowseQuery{Section: "songs"}), nil)
 	json.Unmarshal(res.Body.Bytes(), &queue)
-	if len(queue.IDs) != 100 || queue.Limit != 100 {
+	if len(queue.IDs) != 240 || queue.Limit != 500 {
 		t.Fatalf("queue not capped: %s", res.Body.String())
 	}
 	res = request(t, a, "GET", browseURL("/api/queue/query", BrowseQuery{Section: "songs", Start: "150"}), nil)
 	json.Unmarshal(res.Body.Bytes(), &queue)
-	if len(queue.IDs) != 90 || queue.IDs[0] != "150" {
+	if len(queue.IDs) != 240 || queue.IDs[0] != "000" || queue.IDs[150] != "150" {
 		t.Fatal("selected track outside first page was not included")
 	}
 	for _, q := range []BrowseQuery{{Section: "bad"}, {Section: "songs", PageSize: 1000}, {Section: "songs", Rule: &Rule{Field: "bad", Op: "eq", Value: "x"}}} {
@@ -202,5 +202,47 @@ func TestAlbumDefaultOrderIgnoresArtistBeforeTrackNumber(t *testing.T) {
 		if len(tracks) != 2 || tracks[0].ID != "first" || tracks[1].ID != "second" {
 			t.Fatalf("sort=%q incorrect album order: %v", field, tracks)
 		}
+	}
+}
+
+func TestAutomaticQueueWindow(t *testing.T) {
+	a := seedBrowse(t)
+	if err := a.store.Update(func(st *State) error {
+		for i := 240; i < 650; i++ {
+			st.Tracks = append(st.Tracks, Track{ID: fmt.Sprintf("%03d", i), Title: fmt.Sprintf("Song %03d", i)})
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		start       string
+		desc        bool
+		first, last string
+	}{
+		{"", false, "000", "499"}, {"250", false, "000", "499"},
+		{"499", false, "000", "499"}, {"500", false, "001", "500"},
+		{"649", false, "150", "649"}, {"149", true, "648", "149"},
+	} {
+		res := request(t, a, "GET", browseURL("/api/queue/query", BrowseQuery{Section: "songs", Sort: "title", Desc: tc.desc, Start: tc.start, Page: 8}), nil)
+		var q struct {
+			IDs   []string
+			Limit int
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &q); err != nil {
+			t.Fatal(err)
+		}
+		if res.Code != 200 || q.Limit != 500 || len(q.IDs) != 500 || q.IDs[0] != tc.first || q.IDs[499] != tc.last {
+			t.Fatalf("%+v: %s", tc, res.Body.String())
+		}
+	}
+	res := request(t, a, "GET", browseURL("/api/queue/query", BrowseQuery{Section: "playlists", Detail: "normal", Start: "003"}), nil)
+	var q struct{ IDs []string }
+	json.Unmarshal(res.Body.Bytes(), &q)
+	if fmt.Sprint(q.IDs) != "[200 003 150]" {
+		t.Fatal(res.Body.String())
+	}
+	if request(t, a, "GET", browseURL("/api/queue/query", BrowseQuery{Section: "songs", Start: "gone"}), nil).Code != 404 {
+		t.Fatal("missing selection accepted")
 	}
 }

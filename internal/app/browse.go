@@ -593,6 +593,8 @@ func (a *App) browseQueue(w http.ResponseWriter, r *http.Request) {
 		respond(w, 404, map[string]string{"error": "Track is no longer in this selection"})
 		return
 	}
-	ids = ids[start:min(len(ids), start+100)]
-	respond(w, 200, map[string]any{"ids": ids, "limit": 100})
+	// Keep list order and include the selected track within the automatic window.
+	windowStart := max(0, start-499)
+	ids = ids[windowStart:min(len(ids), windowStart+500)]
+	respond(w, 200, map[string]any{"ids": ids, "limit": 500})
 }

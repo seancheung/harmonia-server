@@ -286,10 +286,12 @@ func (r *Remote) advanceLocked(manual bool) bool {
 	}
 	if r.saved.Index+1 < n {
 		r.saved.Index++
+		r.markShuffleLocked()
 		return true
 	}
 	if r.saved.Repeat == "all" {
 		r.saved.Index = 0
+		r.resetShuffleLocked()
 		return true
 	}
 	return false
@@ -317,6 +319,7 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	saved := r.saved
 	saved.Queue = append([]string{}, saved.Queue...)
+	saved.ShuffleVisited = append([]string{}, saved.ShuffleVisited...)
 	state, lastError := r.state, r.lastError
 	protocol := "airplay2"
 	if r.devices[saved.Output].Type == "AirPlay 1" {
@@ -335,7 +338,7 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 			length = tracks[0].Duration * 1000
 		}
 	}
-	result := map[string]any{"configured": true, "protocol": protocol, "player": map[string]any{"state": state, "item_progress_ms": saved.Position, "item_length_ms": length, "repeat": saved.Repeat, "shuffle": saved.Shuffle, "volume": volume}, "error": lastError, "deadline": saved.Deadline, "waiting": saved.Waiting, "finish": saved.Finish, "index": saved.Index, "gainContext": saved.GainContext, "queueVersion": version, "outputId": saved.Output, "audioParameters": map[string]any{"ruleSet": "", "gain": saved.Gain, "preamp": saved.Preamp, "protect": saved.Protect}, "transportFormat": map[string]any{"codec": "alac", "sampleRate": airplay.SampleRate, "bitDepth": 16, "channels": 2}}
+	result := map[string]any{"configured": true, "protocol": protocol, "player": map[string]any{"state": state, "item_progress_ms": saved.Position, "item_length_ms": length, "repeat": saved.Repeat, "shuffle": saved.Shuffle, "volume": volume}, "error": lastError, "deadline": saved.Deadline, "waiting": saved.Waiting, "finish": saved.Finish, "index": saved.Index, "gainContext": saved.GainContext, "playedIds": saved.ShuffleVisited, "queueVersion": version, "outputId": saved.Output, "audioParameters": map[string]any{"ruleSet": "", "gain": saved.Gain, "preamp": saved.Preamp, "protect": saved.Protect}, "transportFormat": map[string]any{"codec": "alac", "sampleRate": airplay.SampleRate, "bitDepth": 16, "channels": 2}}
 	if req.URL.Query().Get("queueVersion") != version {
 		result["queue"] = r.app.store.Tracks(saved.Queue)
 	}

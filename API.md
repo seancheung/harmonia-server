@@ -11,7 +11,7 @@ Base path: `/api`. Request and response bodies are JSON except `stream` and `cov
 | GET | `/home` | Bounded home sections |
 | GET | `/browse` | Paginated collections and songs |
 | GET | `/library/version` | Current page invalidation version |
-| GET | `/queue/query` | Ordered playback selection, maximum 100 IDs |
+| GET | `/queue/query` | Ordered playback selection, maximum 500 IDs |
 | POST | `/tracks/resolve` | Resolve metadata for at most 200 IDs |
 | GET | `/playlists?type=all|normal|smart` | Filtered playlist summaries |
 | POST | `/sources` | Add `{name, path, keep: [], ignore: []}` |
@@ -139,8 +139,8 @@ Modern clients do not request `/library` or `/library/changes`, including at sta
 - `GET /library/version`: `{version: "opaque revision"}` for lightweight change detection. A changed revision invalidates page caches, not a full-library download.
 - `GET /home`: `{recent, frequent, unheard, artists, total}`. Each section contains at most eight entries. Unheard selection is stable while the library is unchanged.
 - `GET /browse?query=<URL-encoded JSON>`: server-filtered, sorted and paginated songs or collection groups.
-- `GET /queue/query?query=<URL-encoded JSON>`: `{ids: [...], limit: 100}`. Ignores page/pageSize and returns at most 100 playable IDs in selection order. Optional `start` begins at that track; an absent start track returns 404. Missing files are excluded.
-- `POST /tracks/resolve` with `{ids: [...]}`: `{items: [...]}` in requested order, at most 200 IDs. Queue clients resolve only the server-limited selection.
+- `GET /queue/query?query=<URL-encoded JSON>`: `{ids: [...], limit: 500}`. Ignores page/pageSize and returns up to 500 playable IDs in selection order. With no `start`, or a `start` in the first 500, returns the first 500. For a later `start`, returns the 500 ending at that track. Clients start playback at the selected ID within the returned queue; shuffle chooses a random index in the initial window without reordering it. An absent start track returns 404. Missing files are excluded. Manual queue additions are not subject to this automatic loading limit.
+- `POST /tracks/resolve` with `{ids: [...]}`: `{items: [...]}` in requested order, at most 200 IDs. Queue clients resolve only the server-limited selection in batches of at most 200, preserving the returned order.
 - `GET /playlists?type=all|normal|smart`: list metadata and rules without ordered track IDs, suitable for pickers.
 
 Browse query fields are `section`, `detail`, `preset`, `search`, `rule`, `sort`, `desc`, `page`, `pageSize`, `albums`, `disc`, and `recursive`. Sections are `songs`, `albums`, `artists`, `genres`, `folders`, `favorites`, `recent`, and `playlists`. `detail` is a collection ID; folders use `sourceId|relative/folder`. Presets are `recentlyAdded`, `topSongs`, `topArtists`, and `unheard`. Pages start at one, default to 50 entries, and allow sizes 1–100. Artist/genre details can request album groups with `albums:true`; folder queue requests can include descendants with `recursive:true`.
@@ -213,7 +213,7 @@ Discovery errors are returned in `error`; an empty list is not a simulated devic
 
 `start` validates tracks and stores the local queue; connection/decoding then proceed asynchronously. Inspect `GET /remote` for `player.state` (`loading`, `play`, `pause`, `stop`) and `error`. `play` is the scheduled audible timeline, not a hardware acknowledgement. Authentication, transport and decoder failures leave the queue paused with an error. Pause/seek/track changes close and recreate the one transport session. There is no automatic reconnect loop.
 
-When AirPlay is enabled, `GET /remote` reports `configured:true`, meaning the native implementation is available, not that a receiver is connected. It adds `protocol:"airplay1"` or `protocol:"airplay2"` according to the selected output (defaults to AirPlay 2 without an output), `outputId`, and `transportFormat:{codec:"alac",sampleRate:44100,bitDepth:16,channels:2}`. Queue metadata is omitted when the supplied `queueVersion` matches. Existing `audioParameters` contains `ruleSet:""` plus the effective gain settings.
+When AirPlay is enabled, `GET /remote` reports `configured:true`, meaning the native implementation is available, not that a receiver is connected. It adds `protocol:"airplay1"` or `protocol:"airplay2"` according to the selected output (defaults to AirPlay 2 without an output), `outputId`, and `transportFormat:{codec:"alac",sampleRate:44100,bitDepth:16,channels:2}`. Queue metadata is omitted when the supplied `queueVersion` matches. `playedIds` is always included and contains track IDs visited in the current playback round (including the current track), in both sequential and shuffle modes. It records selections/starts, not completed listens. Clients show the current track separately. Replacing/clearing the queue, changing shuffle mode, or advancing into a new repeat-all round resets this set. Existing `audioParameters` contains `ruleSet:""` plus the effective gain settings.
 
 With `HARMONIA_DISABLE_AIRPLAY=true`, `GET /remote` returns `{configured:false, player:{state:"stop"}, queue:[]}` and `GET /outputs` returns `{outputs:[], protocols:[], maxSelected:0}` without discovery. `POST /remote` returns HTTP 503 with an explanatory error for all commands. `/capabilities` reports `airplay:false`, `airplayProtocols:[]`, and `airplayMaxOutputs:0`. Authentication rules remain unchanged.
 

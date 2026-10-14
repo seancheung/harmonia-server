@@ -3,9 +3,10 @@ package app
 import "math/rand/v2"
 
 // Track IDs, rather than queue positions, keep edits and duplicate occurrences
-// from replaying a song within the same shuffle round. Called with mu held.
+// from replaying a song within the same shuffle round. This record also supplies
+// played markers during sequential playback. Called with mu held.
 func (r *Remote) markShuffleLocked() {
-	if !r.saved.Shuffle || len(r.saved.Queue) == 0 {
+	if len(r.saved.Queue) == 0 {
 		return
 	}
 	id := r.saved.Queue[r.saved.Index]
