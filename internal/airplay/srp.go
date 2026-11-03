@@ -5,6 +5,7 @@ import (
 	"crypto/sha512"
 	"crypto/subtle"
 	"errors"
+	"io"
 	"math/big"
 )
 
@@ -24,6 +25,10 @@ func pad(v *big.Int) []byte     { return v.FillBytes(make([]byte, 384)) }
 type srpClient struct{ key, proof, serverProof, public []byte }
 
 func newSRP(salt, server []byte, pin string) (*srpClient, error) {
+	return newSRPWithRandom(salt, server, pin, rand.Reader)
+}
+
+func newSRPWithRandom(salt, server []byte, pin string, randomSource io.Reader) (*srpClient, error) {
 	if len(salt) < 16 || len(salt) > 64 || len(server) == 0 || len(server) > 384 {
 		return nil, errors.New("invalid SRP challenge")
 	}
@@ -34,7 +39,7 @@ func newSRP(salt, server []byte, pin string) (*srpClient, error) {
 		return nil, errors.New("invalid SRP public key")
 	}
 	random := make([]byte, 32)
-	if _, e := rand.Read(random); e != nil {
+	if _, e := io.ReadFull(randomSource, random); e != nil {
 		return nil, e
 	}
 	a := integer(random)
@@ -56,7 +61,8 @@ func newSRP(salt, server []byte, pin string) (*srpClient, error) {
 		hn[i] ^= hg[i]
 	}
 	proof := hash(hn, hash([]byte("Pair-Setup")), salt, A.Bytes(), b.Bytes(), key)
-	return &srpClient{key: key, proof: proof, serverProof: hash(A.Bytes(), proof, key), public: pad(A)}, nil
+	// HAP M2 hashes the full public key, unlike M1 which strips leading zeros.
+	return &srpClient{key: key, proof: proof, serverProof: hash(pad(A), proof, key), public: pad(A)}, nil
 }
 func (s *srpClient) verify(p []byte) error {
 	if subtle.ConstantTimeCompare(s.serverProof, p) != 1 {

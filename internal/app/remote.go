@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -408,6 +406,11 @@ func (r *Remote) start() error {
 		playID := saved.PlaybackSession
 		counted := saved.Counted
 		play := func() error {
+			pcm, release, e := r.app.remotePCM(ctx, track, path, saved)
+			if e != nil {
+				return remoteTrackError{e}
+			}
+			defer release()
 			var credentials *airplay.Credentials
 			if paired {
 				credentials = &cred
@@ -446,19 +449,8 @@ func (r *Remote) start() error {
 				r.volumePending = false
 				r.mu.Unlock()
 			}
-			gain := ReplayGain(track, remoteGainMode(saved), math.Max(-30, math.Min(30, saved.Preamp)), saved.Protect)
-			args := []string{"-nostdin", "-v", "error", "-threads", "1", "-ss", fmt.Sprintf("%.3f", float64(saved.Position)/1000), "-i", path, "-map", "0:a:0", "-vn", "-af", fmt.Sprintf("volume=%.9f", gain), "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", "-f", "s16le", "pipe:1"}
-			cmd := exec.CommandContext(ctx, r.app.config.FFmpeg, args...)
-			stdout, e := cmd.StdoutPipe()
-			if e != nil {
-				return e
-			}
-			var stderr limitedLog
-			cmd.Stderr = &stderr
-			if e = cmd.Start(); e != nil {
-				return e
-			}
-			e = session.Stream(ctx, stdout, func(position time.Duration) {
+			r.prefetchNext(ctx, generation)
+			e = session.Stream(ctx, pcm, func(position time.Duration) {
 				listened = position
 				r.mu.Lock()
 				if generation == r.generation {
@@ -477,18 +469,22 @@ func (r *Remote) start() error {
 				}
 			})
 			if e != nil {
-				_ = cmd.Process.Kill()
-			}
-			waitErr := cmd.Wait()
-			if e != nil {
 				return e
-			}
-			if waitErr != nil {
-				return remoteTrackError{fmt.Errorf("audio decode: %w: %s", waitErr, stderr.String())}
 			}
 			return nil
 		}
 		err := play()
+		if errors.Is(err, airplay.ErrSessionNotStarted) && ctx.Err() == nil {
+			log.Printf("AirPlay output %s closed before audio started; reconnecting once: %v", device.ID, err)
+			timer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			err = play()
+		}
 		if err == nil && !counted {
 			_ = r.app.store.RecordPlayed(track.ID, playID, saved.Listened+listened.Seconds(), true, saved.Seeked, time.Now())
 		}
@@ -502,16 +498,6 @@ func (r *Remote) start() error {
 	}()
 	return nil
 }
-
-type limitedLog struct{ b []byte }
-
-func (l *limitedLog) Write(p []byte) (int, error) {
-	n := len(p)
-	space := 4096 - len(l.b)
-	l.b = append(l.b, p[:min(space, n)]...)
-	return n, nil
-}
-func (l *limitedLog) String() string { return string(l.b) }
 
 type remoteCommand struct {
 	Action      string   `json:"action"`

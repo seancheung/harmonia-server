@@ -9,7 +9,7 @@ implemented locally.
 ## Data path and ownership
 
 `Remote` owns queue/order, gain, selected output and the audible progress estimate.
-One cancellable worker decodes a track into signed 16-bit stereo PCM at 44100 Hz.
+A cancellable worker acquires a normalized WAV cache lease (signed 16-bit stereo PCM at 44100 Hz, with effective ReplayGain baked in). A miss finishes conversion before receiver setup; a hit reads PCM directly without FFmpeg. Seek uses a sample-aligned offset within the data chunk. Sequential playback prefetches one successor; shuffle order is unchanged. Cache eviction and manual clearing preserve active leases.
 The AirPlay session frames it as verbatim ALAC (352 samples/channel), encrypts
 and paces RTP packets. It retains a bounded retransmission window. Audio nonces
 use a 64-bit counter independent of the 16-bit RTP sequence to avoid nonce reuse.

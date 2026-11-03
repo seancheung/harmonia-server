@@ -1,13 +1,17 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +21,7 @@ import (
 )
 
 type testAirplaySession struct {
+	streamError           error
 	artwork               []byte
 	metadata              airplay.TrackMetadata
 	volumeWrites          []int
@@ -36,6 +41,9 @@ func (s *testAirplaySession) Artwork(b []byte) error {
 	return nil
 }
 func (s *testAirplaySession) Stream(ctx context.Context, reader io.Reader, progress func(time.Duration)) error {
+	if s.streamError != nil {
+		return s.streamError
+	}
 	if _, e := io.Copy(io.Discard, reader); e != nil {
 		return e
 	}
@@ -142,6 +150,7 @@ func TestRemoteShuffleAutomaticPlayback(t *testing.T) {
 
 func TestRemoteSingleDevicePausedTransferAndSeek(t *testing.T) {
 	a, sessions := remoteFixture(t)
+	extendRemoteAudio(t, a)
 	res := request(t, a, "POST", "/api/remote", map[string]any{"action": "outputs", "outputs": []string{"speaker", "other"}})
 	if res.Code != 400 {
 		t.Fatal("accepted multiroom")
@@ -267,6 +276,7 @@ func TestRemoteConnectionFailureAndPersistence(t *testing.T) {
 
 func TestRemoteHistorySurvivesPauseAndResume(t *testing.T) {
 	a, sessions := remoteFixture(t)
+	extendRemoteAudio(t, a)
 	a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
 		s := &testAirplaySession{progress: 16 * time.Second, done: make(chan struct{}), finish: make(chan struct{}), started: make(chan struct{})}
 		sessions <- s
@@ -615,12 +625,155 @@ func TestRemoteDecodeFailureSkipsToNextTrack(t *testing.T) {
 	}
 	remoteOK(t, a, map[string]any{"action": "failure", "failure": "skip"})
 	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}})
-	broken := awaitSession(t, sessions)
-	close(broken.finish)
-	awaitSession(t, sessions)
+	// The invalid source is rejected before opening a receiver session.
+	good := awaitSession(t, sessions)
+	if good.metadata.ID != "b" {
+		t.Fatalf("connected for invalid source: %s", good.metadata.ID)
+	}
 	a.remote.mu.Lock()
 	defer a.remote.mu.Unlock()
 	if a.remote.saved.Index != 1 {
 		t.Fatal("decode failure was not skipped")
 	}
+}
+
+func TestRemoteRetriesUnstartedSessionOnce(t *testing.T) {
+	for _, recover := range []bool{true, false} {
+		t.Run(fmt.Sprint(recover), func(t *testing.T) {
+			a, sessions := remoteFixture(t)
+			calls := 0
+			a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
+				calls++
+				s := &testAirplaySession{done: make(chan struct{}), finish: make(chan struct{}), started: make(chan struct{})}
+				if calls == 1 || !recover {
+					s.streamError = airplay.ErrSessionNotStarted
+				}
+				sessions <- s
+				return s, nil
+			}
+			remoteOK(t, a, map[string]any{"action": "gain", "gain": "track", "preamp": -3, "protect": true})
+			remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}, "index": 0})
+			first := <-sessions
+			select {
+			case <-first.done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("failed session not closed")
+			}
+			if recover {
+				awaitSession(t, sessions)
+				remoteWait(t, a.remote, func() bool { return a.remote.state == "play" && a.remote.saved.Index == 0 })
+			} else {
+				remoteWait(t, a.remote, func() bool { return a.remote.lastError != "" && a.remote.state != "loading" })
+			}
+			a.remote.Close()
+			if calls != 2 {
+				t.Fatalf("got %d connection attempts", calls)
+			}
+		})
+	}
+}
+
+// Capture the actual PCM handed to the transport, including the primed packet.
+type recordingAirplaySession struct {
+	*testAirplaySession
+	pcm bytes.Buffer
+}
+
+func (s *recordingAirplaySession) Stream(ctx context.Context, reader io.Reader, progress func(time.Duration)) error {
+	return s.testAirplaySession.Stream(ctx, io.TeeReader(reader, &s.pcm), progress)
+}
+
+func TestRemotePrimesDecoderBeforeConnectingAndAdvancing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell decoder fixture")
+	}
+	a, _ := remoteFixture(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ready")
+	t.Setenv("HARMONIA_TEST_PCM_READY", marker)
+	decoder := filepath.Join(dir, "decoder")
+	// Simulate slow probing followed by a short, valid stereo PCM tail.
+	wav := filepath.Join(dir, "input.wav")
+	if err := os.WriteFile(wav, testPCMBytes([]byte("12345678")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HARMONIA_TEST_PCM_INPUT", wav)
+	script := "#!/bin/sh\nsleep 0.1\nfor arg do output=$arg; done\ncp \"$HARMONIA_TEST_PCM_INPUT\" \"$output\"\n: > \"$HARMONIA_TEST_PCM_READY\"\n"
+	if err := os.WriteFile(decoder, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	a.cache.ffmpeg = decoder
+	sessions := make(chan *recordingAirplaySession, 2)
+	a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
+		if err := os.Remove(marker); err != nil {
+			return nil, fmt.Errorf("connected before PCM was ready: %w", err)
+		}
+		s := &recordingAirplaySession{testAirplaySession: &testAirplaySession{done: make(chan struct{}), finish: make(chan struct{}), started: make(chan struct{})}}
+		sessions <- s
+		return s, nil
+	}
+	remoteOK(t, a, map[string]any{"action": "gain", "gain": "track", "preamp": -3, "protect": true})
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}, "index": 0})
+	for range 2 {
+		var s *recordingAirplaySession
+		select {
+		case s = <-sessions:
+		case <-time.After(3 * time.Second):
+			t.Fatal("decoder did not connect")
+		}
+		select {
+		case <-s.started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("stream did not start")
+		}
+		if got := s.pcm.String(); got != "12345678" {
+			t.Fatalf("PCM lost or duplicated: %q", got)
+		}
+		close(s.finish)
+	}
+	remoteWait(t, a.remote, func() bool { return a.remote.state == "stop" })
+}
+
+func TestRemoteDecoderFailureDoesNotConnect(t *testing.T) {
+	a, _ := remoteFixture(t)
+	a.cache.ffmpeg = filepath.Join(t.TempDir(), "missing-decoder")
+	connected := make(chan struct{}, 1)
+	a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
+		connected <- struct{}{}
+		return nil, errors.New("unexpected connection")
+	}
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a"}, "index": 0})
+	remoteWait(t, a.remote, func() bool { return a.remote.lastError != "" })
+	select {
+	case <-connected:
+		t.Fatal("connected before decoder failure")
+	default:
+	}
+}
+
+// Seek/history tests must contain real PCM beyond their simulated playhead.
+func extendRemoteAudio(t *testing.T, a *App) {
+	t.Helper()
+	root := a.store.Read().Sources[0].Path
+	output := filepath.Join(root, "long.wav")
+	if b, err := exec.Command("ffmpeg", "-v", "error", "-stream_loop", "-1", "-i", filepath.Join(root, "song.wav"), "-t", "60", output).CombinedOutput(); err != nil {
+		t.Fatalf("extend fixture: %v: %s", err, b)
+	}
+	if err := os.Rename(output, filepath.Join(root, "song.wav")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testPCMBytes(pcm []byte) []byte {
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	binary.Write(&b, binary.LittleEndian, uint32(36+len(pcm)))
+	b.WriteString("WAVEfmt ")
+	for _, v := range []any{uint32(16), uint16(1), uint16(2), uint32(44100), uint32(176400), uint16(4), uint16(16)} {
+		binary.Write(&b, binary.LittleEndian, v)
+	}
+	b.WriteString("data")
+	binary.Write(&b, binary.LittleEndian, uint32(len(pcm)))
+	b.Write(pcm)
+	return b.Bytes()
 }

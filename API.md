@@ -217,7 +217,7 @@ When AirPlay is enabled, `GET /remote` reports `configured:true`, meaning the na
 
 With `HARMONIA_DISABLE_AIRPLAY=true`, `GET /remote` returns `{configured:false, player:{state:"stop"}, queue:[]}` and `GET /outputs` returns `{outputs:[], protocols:[], maxSelected:0}` without discovery. `POST /remote` returns HTTP 503 with an explanatory error for all commands. `/capabilities` reports `airplay:false`, `airplayProtocols:[]`, and `airplayMaxOutputs:0`. Authentication rules remain unchanged.
 
-Remote playback ignores the client's `ruleSet`: source audio is decoded directly with FFmpeg. `/tracks/{id}/stream?output=airplay` and the corresponding `audio-info` describe a normalized WAV preview with the same PCM format/gain, not the encrypted ALAC wire stream. Local conversion rules are unchanged.
+Remote playback ignores the client's `ruleSet`: source audio is converted once to the shared normalized WAV cache. Native playback reads PCM directly from this cache, with ReplayGain already applied, and seeks by sample offset. Cache misses finish conversion before receiver setup; sequential playback prefetches the next track. `/tracks/{id}/stream?output=airplay` and the corresponding `audio-info` describe a normalized WAV preview with the same PCM format/gain, not the encrypted ALAC wire stream. Local conversion rules are unchanged.
 
 The previous external-backend URL configuration, conversion-rule setting and settings endpoint have been removed. Old database settings are ignored. `remote.json` queue entries remain readable; external queue item IDs are ignored. Restart restores paused state without a network connection or an armed sleep timer.
 

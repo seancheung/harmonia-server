@@ -88,7 +88,7 @@ func TestPersistentPairingAndVerify(t *testing.T) {
 			if !bytes.Equal(proof, f[4]) {
 				return errors.New("bad SRP proof")
 			}
-			if e = reply(m, tlv(tag(6), tag(4), tag(4), hash(A.Bytes(), proof, secret))); e != nil {
+			if e = reply(m, tlv(tag(6), tag(4), tag(4), hash(pad(A), proof, secret))); e != nil {
 				return e
 			}
 			m, e = readMessage(reader)

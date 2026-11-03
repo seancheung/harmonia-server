@@ -119,6 +119,8 @@ func Connect(ctx context.Context, device Device, id string, cred *Credentials) (
 		}
 		return nil, e
 	}
+	// Session-level SETUP already allocated receiver resources, even if later setup fails.
+	s.active.Store(true)
 	if port := number(response["eventPort"]); port > 0 && port <= 65535 {
 		s.event, e = net.DialTimeout("tcp4", net.JoinHostPort(device.Address, strconv.Itoa(int(port))), 5*time.Second)
 		if e != nil {
@@ -325,8 +327,17 @@ func (s *Session) waitForClock(ctx context.Context) error {
 	}
 }
 
+// ErrSessionNotStarted permits one fresh session after a receiver closes the
+// event socket during setup. Never replay audio that has already been sent.
+var ErrSessionNotStarted = errors.New("AirPlay session closed before audio started")
+
 // Stream reports the scheduled position, not proof of audible receiver output.
-func (s *Session) Stream(ctx context.Context, pcm io.Reader, progress func(time.Duration)) error {
+func (s *Session) Stream(ctx context.Context, pcm io.Reader, progress func(time.Duration)) (err error) {
+	defer func() {
+		if s.counter == 0 && errors.Is(s.err(), io.EOF) && ctx.Err() == nil {
+			err = fmt.Errorf("%w: %v", ErrSessionNotStarted, s.err())
+		}
+	}()
 	if err := s.waitForClock(ctx); err != nil {
 		return err
 	}

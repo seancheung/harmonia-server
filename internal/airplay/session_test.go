@@ -109,7 +109,7 @@ func TestTransientSessionWire(t *testing.T) {
 			if !bytes.Equal(proof, fields[4]) {
 				return errors.New("incorrect controller SRP proof")
 			}
-			if e = reply(m, tlv(tag(6), tag(4), tag(4), hash(A.Bytes(), proof, secret))); e != nil {
+			if e = reply(m, tlv(tag(6), tag(4), tag(4), hash(pad(A), proof, secret))); e != nil {
 				return e
 			}
 			secure := newSecure(structRW{reader, conn}, secret, false)
@@ -270,5 +270,21 @@ func TestTransientSessionWire(t *testing.T) {
 	session.Close()
 	if e = <-serverDone; e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestEventEOFRecoveryOnlyBeforeAudio(t *testing.T) {
+	for _, sent := range []uint64{0, 1} {
+		s := &Session{counter: sent, failure: fmt.Errorf("AirPlay event channel: %w", io.EOF)}
+		err := s.Stream(context.Background(), bytes.NewReader(nil), func(time.Duration) {})
+		if errors.Is(err, ErrSessionNotStarted) != (sent == 0) {
+			t.Fatalf("sent=%d err=%v", sent, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &Session{failure: io.EOF}
+	if err := s.Stream(ctx, bytes.NewReader(nil), func(time.Duration) {}); errors.Is(err, ErrSessionNotStarted) {
+		t.Fatal("retry after cancellation")
 	}
 }

@@ -29,7 +29,7 @@ type cacheEntry struct {
 type Cache struct {
 	mu          sync.Mutex
 	entries     map[string]*cacheEntry
-	locks       map[string]*sync.Mutex
+	locks       map[string]chan struct{}
 	jobs        map[string]bool
 	dir, ffmpeg string
 	store       *Store
@@ -37,7 +37,7 @@ type Cache struct {
 
 func NewCache(dir, ffmpeg string, s *Store) *Cache {
 	_ = os.MkdirAll(dir, 0755)
-	c := &Cache{dir: dir, ffmpeg: ffmpeg, store: s, entries: map[string]*cacheEntry{}, locks: map[string]*sync.Mutex{}, jobs: map[string]bool{}}
+	c := &Cache{dir: dir, ffmpeg: ffmpeg, store: s, entries: map[string]*cacheEntry{}, locks: map[string]chan struct{}{}, jobs: map[string]bool{}}
 	files, _ := os.ReadDir(dir)
 	for _, f := range files {
 		if strings.HasSuffix(f.Name(), ".part") {
@@ -112,18 +112,28 @@ func (c *Cache) Clear() {
 	c.trimLocked(0)
 }
 func (c *Cache) Acquire(ctx context.Context, t Track, input string, rule Conversion, gain *float64) (string, func(), error) {
-	data, _ := json.Marshal([]any{t.ID, t.Modified, t.Size, t.Revision, rule.Codec, rule.OutputBitrate, rule.OutputSampleRate, rule.OutputChannels, gain, rule.GainIdentity})
+	// Keep the legacy empty identity slot so ordinary HTTP cache keys survive.
+	// Effective gain already fully describes the volume filter.
+	data, _ := json.Marshal([]any{t.ID, t.Modified, t.Size, t.Revision, rule.Codec, rule.OutputBitrate, rule.OutputSampleRate, rule.OutputChannels, gain, ""})
 	hash := sha256.Sum256(data)
 	key := hex.EncodeToString(hash[:]) + "." + rule.Codec
 	c.mu.Lock()
 	lock := c.locks[key]
 	if lock == nil {
-		lock = &sync.Mutex{}
+		lock = make(chan struct{}, 1)
+		lock <- struct{}{}
 		c.locks[key] = lock
 	}
 	c.mu.Unlock()
-	lock.Lock()
-	defer lock.Unlock()
+	select {
+	case <-ctx.Done():
+		return "", nil, ctx.Err()
+	case <-lock:
+	}
+	defer func() { lock <- struct{}{} }()
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	c.mu.Lock()
 	if e := c.entries[key]; e != nil && !e.Pending {
 		e.Active++
@@ -167,6 +177,9 @@ func (c *Cache) Acquire(ctx context.Context, t Track, input string, rule Convers
 	}
 	if gain != nil {
 		args = append(args, "-af", fmt.Sprintf("volume=%.10f", *gain))
+	}
+	if rule.Codec == "wav" {
+		args = append(args, "-rf64", "auto")
 	}
 	args = append(args, "-f", format, "-y", p)
 	cmd := exec.CommandContext(ctx, c.ffmpeg, args...)
@@ -257,10 +270,7 @@ func (a *App) streamConversion(t Track, r *http.Request) (*Conversion, *float64)
 		preamp, _ := numeric(r.URL.Query().Get("preamp"))
 		g := ReplayGain(t, r.URL.Query().Get("gain"), math.Max(-30, math.Min(30, preamp)), r.URL.Query().Get("protect") != "false")
 		rule = &Conversion{Codec: "wav", OutputSampleRate: 44100, OutputChannels: 2}
-		if rule != nil {
-			gain = &g
-			rule.GainIdentity = r.URL.Query().Get("gain") + ":" + r.URL.Query().Get("preamp") + ":" + r.URL.Query().Get("protect")
-		}
+		gain = &g
 	}
 	return rule, gain
 }

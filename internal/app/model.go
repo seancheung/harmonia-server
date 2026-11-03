@@ -87,7 +87,6 @@ type Playlist struct {
 type Conversion struct {
 	OutputChannels   int      `json:"-"`
 	Formats          []string `json:"formats,omitempty"`
-	GainIdentity     string   `json:"-"`
 	Format           string   `json:"format"`
 	BitrateOp        string   `json:"bitrateOp"`
 	Bitrate          int      `json:"bitrate"`
