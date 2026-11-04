@@ -17,6 +17,7 @@ import (
 type Config struct {
 	Listen, DataDir, CacheDir, FFprobe, FFmpeg, Origin, Token string
 	DisableAirPlay                                            bool
+	AirPlayArtwork                                            bool
 }
 
 func env(k, v string) string {
@@ -30,7 +31,11 @@ func ConfigFromEnv() Config {
 	if err != nil {
 		log.Printf("Invalid HARMONIA_DISABLE_AIRPLAY value; using false")
 	}
-	return Config{Listen: env("HARMONIA_LISTEN", ":8090"), DataDir: env("HARMONIA_DATA", "./data"), CacheDir: os.Getenv("HARMONIA_CACHE"), FFprobe: env("HARMONIA_FFPROBE", "ffprobe"), FFmpeg: env("HARMONIA_FFMPEG", "ffmpeg"), Origin: env("HARMONIA_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173"), Token: os.Getenv("HARMONIA_TOKEN"), DisableAirPlay: disabled}
+	artwork, err := strconv.ParseBool(env("HARMONIA_AIRPLAY_ARTWORK", "false"))
+	if err != nil {
+		log.Printf("Invalid HARMONIA_AIRPLAY_ARTWORK value; using false")
+	}
+	return Config{AirPlayArtwork: artwork, Listen: env("HARMONIA_LISTEN", ":8090"), DataDir: env("HARMONIA_DATA", "./data"), CacheDir: os.Getenv("HARMONIA_CACHE"), FFprobe: env("HARMONIA_FFPROBE", "ffprobe"), FFmpeg: env("HARMONIA_FFMPEG", "ffmpeg"), Origin: env("HARMONIA_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173"), Token: os.Getenv("HARMONIA_TOKEN"), DisableAirPlay: disabled}
 }
 
 type App struct {

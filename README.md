@@ -49,6 +49,7 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
+      HARMONIA_AIRPLAY_ARTWORK: "${HARMONIA_AIRPLAY_ARTWORK:-false}"
       HARMONIA_DISABLE_AIRPLAY: "${HARMONIA_DISABLE_AIRPLAY:-false}"
       HARMONIA_LISTEN: "${HARMONIA_LISTEN:-:8090}"
       HARMONIA_ORIGIN: "http://${HARMONIA_HOST:-localhost}:8080"
@@ -130,6 +131,7 @@ Run from the `harmonia-server` directory to automatically load its optional `.en
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `HARMONIA_LISTEN` | `:8090` | HTTP listen address |
+| `HARMONIA_AIRPLAY_ARTWORK` | `false` | Send AirPlay cover artwork when `true` or `1`; restart/recreate the server to apply |
 | `HARMONIA_DISABLE_AIRPLAY` | `false` | Disable AirPlay discovery, pairing and remote playback (`true` or `1`); restart/recreate the server to apply |
 | `HARMONIA_DATA` | `./data` (`/data` in Docker) | Writable application data |
 | `HARMONIA_CACHE` | `<HARMONIA_DATA>/cache` | Dedicated writable transcode cache directory |
@@ -174,6 +176,8 @@ Rule sets are ordered. Every configured condition must match; the first matching
 The persistent cache defaults to 5 GiB and evicts least-recently-used inactive entries. A key includes the track generation, file signature and actual output settings, not the rule-set name. Browser transcodes never contain ReplayGain. Native AirPlay playback and HTTP AirPlay previews share normalized WAV entries keyed by effective gain and channel count. Equivalent gain settings reuse the same samples. In-progress files are never considered complete cache entries. Active files survive manual cleanup and are removed on release. When a result does not fit the cache, it is served from a temporary file and removed after the request; conversion currently finishes before that file is served, so long files can have an initial preparation delay.
 
 ## Native AirPlay 1 / 2 (single receiver)
+
+AirPlay cover artwork is disabled by default; no image or image/none requests are sent. Title, artist, album and playback progress are still sent. To opt in, set `HARMONIA_AIRPLAY_ARTWORK=true` in `.env` (native/Compose), or pass `-e HARMONIA_AIRPLAY_ARTWORK=true` to `docker run`, then restart the server or recreate the container. Empty/unset or invalid values use `false`. When enabled, a cover transport failure before audio starts triggers one reconnect without artwork for that attempt.
 
 AirPlay shuffle plays each distinct queued track once per round. List repeat starts another shuffled round only after that round completes, avoiding the same song across the boundary when alternatives exist. The server owns this order for automatic transitions and the player's shuffle Next button. Round progress is saved with the remote queue; starting a replacement queue or toggling shuffle resets it. Explicitly selecting a song or going back can replay a song intentionally.
 

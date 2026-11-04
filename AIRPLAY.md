@@ -57,10 +57,11 @@ restores queue/position paused and disarms timers. Refresh outputs after restart
   progress remains an estimate, not a receiver rendering acknowledgement.
 - DMAP music item metadata (title, artist, album, album artist, stable track ID,
   track/disc number and duration), initial RTP progress including seeks, and
-  volume. JPEG/PNG covers (up to 8 MiB) are sent on each playback session,
+  volume. Artwork is disabled by default (including image/none requests).
+  With `HARMONIA_AIRPLAY_ARTWORK=true`, JPEG/PNG covers (up to 8 MiB) are sent on each playback session,
   including track changes and resumed connections; missing/invalid covers send
-  an image/none clear request. Artwork rejection is logged without aborting
-  audio. Receiver UI support varies; MediaRemote artwork/UI, remote-button
+  an image/none clear request. A complete artwork rejection is logged without aborting
+  audio; a transport failure before audio starts triggers one reconnect without artwork. Receiver UI support varies; MediaRemote artwork/UI, remote-button
   integration, Home stereo groups and automatic reconnect are not implemented.
 - Authentication/decoder/transport failures remain explicit; no fake devices,
   successful pairing or fabricated receiver status.

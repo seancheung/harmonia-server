@@ -4,17 +4,19 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/harmonia/harmonia-server/internal/airplay"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/harmonia/harmonia-server/internal/airplay"
 )
 
 func TestRemoteArtworkLifecycle(t *testing.T) {
 	a, sessions := remoteFixture(t)
+	a.config.AirPlayArtwork = true
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
 		t.Fatal(err)
@@ -61,6 +63,7 @@ func TestRemoteArtworkInvalidFile(t *testing.T) {
 
 func TestRemoteArtworkDisconnectRetriesWithoutArtwork(t *testing.T) {
 	a, sessions := remoteFixture(t)
+	a.config.AirPlayArtwork = true
 	calls := 0
 	a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
 		calls++
@@ -100,6 +103,7 @@ func TestRemoteArtworkDisconnectRetriesWithoutArtwork(t *testing.T) {
 
 func TestRemoteArtworkRejectionStillPlays(t *testing.T) {
 	a, sessions := remoteFixture(t)
+	a.config.AirPlayArtwork = true
 	a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
 		s := &testAirplaySession{artworkError: errors.New("RTSP 415 unsupported media"), done: make(chan struct{}), finish: make(chan struct{}), started: make(chan struct{})}
 		sessions <- s
@@ -108,4 +112,30 @@ func TestRemoteArtworkRejectionStillPlays(t *testing.T) {
 	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a"}, "index": 0})
 	awaitSession(t, sessions)
 	remoteWait(t, a.remote, func() bool { return a.remote.state == "play" })
+}
+
+func TestRemoteArtworkDisabledByDefault(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}, "index": 0})
+	first := awaitSession(t, sessions)
+	if first.artworkCalls != 0 || first.metadata.HasArtwork {
+		t.Fatal("default session sent artwork")
+	}
+	close(first.finish)
+	next := awaitSession(t, sessions)
+	if next.artworkCalls != 0 || next.metadata.HasArtwork {
+		t.Fatal("next track sent artwork")
+	}
+}
+
+func TestAirPlayArtworkEnvironment(t *testing.T) {
+	for _, value := range []string{"", "false", "0", "true", "1", "TRUE", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("HARMONIA_AIRPLAY_ARTWORK", value)
+			want := value == "true" || value == "1" || value == "TRUE"
+			if ConfigFromEnv().AirPlayArtwork != want {
+				t.Fatalf("unexpected setting for %q", value)
+			}
+		})
+	}
 }

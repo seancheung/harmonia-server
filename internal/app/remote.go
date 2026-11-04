@@ -405,11 +405,15 @@ func (r *Remote) start() error {
 		var listened time.Duration
 		playID := saved.PlaybackSession
 		counted := saved.Counted
-		artwork, artworkErr := remoteArtwork(track.Cover)
-		if artworkErr != nil {
-			log.Printf("AirPlay artwork for track %s: %v", track.ID, artworkErr)
+		skipArtwork := !r.app.config.AirPlayArtwork
+		var artwork []byte
+		if !skipArtwork {
+			var artworkErr error
+			artwork, artworkErr = remoteArtwork(track.Cover)
+			if artworkErr != nil {
+				log.Printf("AirPlay artwork for track %s: %v", track.ID, artworkErr)
+			}
 		}
-		skipArtwork := false
 		play := func() error {
 			pcm, release, e := r.app.remotePCM(ctx, track, path, saved)
 			if e != nil {
