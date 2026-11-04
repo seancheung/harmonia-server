@@ -16,6 +16,7 @@ import (
 )
 
 type Session struct {
+	metadata              MetadataSupport
 	legacy                bool
 	aesKey, aesIV         []byte
 	active                atomic.Bool
@@ -27,6 +28,7 @@ type Session struct {
 	secret                []byte
 	seq                   uint16
 	stamp, ssrc           uint32
+	origin                uint32
 	counter               uint64
 	lead                  time.Duration
 	done                  chan struct{}
@@ -68,7 +70,7 @@ func Connect(ctx context.Context, device Device, id string, cred *Credentials) (
 	if e != nil {
 		return nil, e
 	}
-	s = &Session{ctrl: c, done: make(chan struct{}), packets: map[uint16][]byte{}, lead: time.Second}
+	s = &Session{metadata: device.Metadata, ctrl: c, done: make(chan struct{}), packets: map[uint16][]byte{}, lead: time.Second}
 	ok := false
 	defer func(session *Session) {
 		if !ok {
@@ -257,8 +259,12 @@ func (s *Session) retransmits() {
 			b := s.packets[start+uint16(i)]
 			s.mu.Unlock()
 			if b != nil {
-				out := append([]byte{0x80, 0xd6, buf[2], buf[3]}, b...)
-				_, _ = s.rtcp.WriteToUDP(out, addr)
+				// Like OwnTone, resend original RTP on the audio channel: some
+				// receivers ignore control-channel encapsulated retransmissions.
+				if _, err := s.data.WriteToUDP(b, s.target); err != nil {
+					s.fail(err)
+					return
+				}
 			}
 		}
 	}
@@ -285,10 +291,11 @@ func (s *Session) syncAudio(stamp uint32, at time.Time, first bool) error {
 	binary.BigEndian.PutUint16(b[2:], 7) // AirPlay sync flags, not an RTCP length
 	latency := uint32(s.lead * SampleRate / time.Second)
 	if s.clock.ptp {
-		binary.BigEndian.PutUint32(b[4:], stamp)
-		binary.BigEndian.PutUint32(b[16:], stamp+latency)
+		binary.BigEndian.PutUint16(b[2:], 6)
+		binary.BigEndian.PutUint32(b[4:], stamp-latency)
+		binary.BigEndian.PutUint32(b[16:], stamp-11025)
 		b[1] = 0xd7
-		binary.BigEndian.PutUint64(b[8:], uint64(at.UnixNano()))
+		binary.BigEndian.PutUint64(b[8:], uint64(at.Add(-s.lead).UnixNano()))
 		binary.BigEndian.PutUint64(b[20:], s.clock.id)
 	} else {
 		// Match the audible position to its clock instant, and advertise the
@@ -354,6 +361,7 @@ var ErrSessionNotStarted = errors.New("AirPlay session closed before audio start
 
 // Stream reports the scheduled position, not proof of audible receiver output.
 func (s *Session) Stream(ctx context.Context, pcm io.Reader, progress func(time.Duration)) (err error) {
+	s.origin = s.stamp
 	defer func() {
 		if s.counter == 0 && errors.Is(s.err(), io.EOF) && ctx.Err() == nil {
 			err = fmt.Errorf("%w: %v", ErrSessionNotStarted, s.err())

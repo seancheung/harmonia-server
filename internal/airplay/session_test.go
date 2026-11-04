@@ -248,14 +248,14 @@ func TestTransientSessionWire(t *testing.T) {
 	}
 	request := []byte{0x80, 0xd5, 0, 1, packet[2], packet[3], 0, 1}
 	_, _ = controlUDP.WriteToUDP(request, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
-	_ = controlUDP.SetReadDeadline(time.Now().Add(time.Second))
+	_ = data.SetReadDeadline(time.Now().Add(time.Second))
 	for {
-		n, _, e := controlUDP.ReadFromUDP(b)
+		n, _, e := data.ReadFromUDP(b)
 		if e != nil {
 			t.Fatal(e)
 		}
-		if b[1] == 0xd6 {
-			if !bytes.Equal(b[4:n], packet) {
+		if binary.BigEndian.Uint16(b[2:]) == binary.BigEndian.Uint16(packet[2:]) {
+			if !bytes.Equal(b[:n], packet) {
 				t.Fatal("retransmit differs")
 			}
 			break

@@ -23,7 +23,7 @@ func TestRAOPDiscovery(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "aa:bb:cc:dd:ee:ff" || got[0].Name != "Speaker" || got[0].Type != "AirPlay 1" || !got[0].RSA || got[0].UnsupportedReason != "" {
 		t.Fatalf("%+v", got)
 	}
-	services["speaker._airplay._tcp.local."] = &discoveredService{name: "Speaker", host: "speaker.local.", port: 7000, txt: map[string]string{"deviceid": "AA:BB:CC:DD:EE:FF", "features": "0x0,0x10000"}}
+	services["speaker._airplay._tcp.local."] = &discoveredService{name: "Speaker", host: "speaker.local.", port: 7000, txt: map[string]string{"deviceid": "AA:BB:CC:DD:EE:FF", "features": "0x200,0x10000"}}
 	for range 30 {
 		got = devicesFromServices(services, hosts)
 		if len(got) != 1 || got[0].Type != "AirPlay 2" || got[0].Port != 7000 {

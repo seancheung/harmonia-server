@@ -9,6 +9,23 @@ import (
 	"time"
 )
 
+// Known distinguishes advertised capabilities from manually configured devices.
+type MetadataSupport struct{ Known, Text, Artwork, Progress bool }
+
+func optionalMetadataError(_ message, err error) error {
+	if err == nil {
+		return nil
+	}
+	var rejection *responseError
+	if errors.As(err, &rejection) {
+		switch rejection.status {
+		case "405", "415", "451", "501":
+			return nil
+		}
+	}
+	return err
+}
+
 type TrackMetadata struct {
 	ID, Title, Artist, Album, AlbumArtist string
 	HasArtwork                            bool
@@ -55,18 +72,33 @@ func trackDMAP(track TrackMetadata) []byte {
 // Metadata is sent before Stream starts; timestamps use that stream's RTP
 // origin, including the saved seek position rather than a new song at zero.
 func (s *Session) Metadata(track TrackMetadata) error {
-	headers := map[string]string{"RTP-Info": fmt.Sprintf("rtptime=%d", s.stamp)}
-	if track.Duration > 0 {
+	return s.metadataAt(track, s.stamp)
+}
+
+// MetadataAt schedules a track boundary relative to the continuous stream origin.
+// The caller serializes this with Stream reads, including boundaries inside a packet.
+func (s *Session) MetadataAt(track TrackMetadata, frame uint64) error {
+	return s.metadataAt(track, s.origin+uint32(frame))
+}
+
+func (s *Session) metadataAt(track TrackMetadata, stamp uint32) error {
+	headers := map[string]string{"RTP-Info": fmt.Sprintf("rtptime=%d", stamp)}
+	if track.Duration > 0 && (!s.metadata.Known || s.metadata.Progress) {
 		position := min(max(track.Position, 0), track.Duration)
-		start := s.stamp - uint32(position*time.Duration(SampleRate)/time.Second)
+		start := stamp - uint32(position*time.Duration(SampleRate)/time.Second)
 		end := start + uint32(track.Duration*time.Duration(SampleRate)/time.Second)
-		progress := []byte(fmt.Sprintf("progress: %d/%d/%d\r\n", start, s.stamp, end))
-		if _, err := s.ctrl.request("SET_PARAMETER", "", "text/parameters", progress, headers); err != nil {
+		progress := []byte(fmt.Sprintf("progress: %d/%d/%d\r\n", start, stamp, end))
+		m, err := s.ctrl.request("SET_PARAMETER", "", "text/parameters", progress, headers)
+		if err = optionalMetadataError(m, err); err != nil {
 			return err
 		}
 	}
-	_, err := s.ctrl.request("SET_PARAMETER", "", "application/x-dmap-tagged", trackDMAP(track), headers)
-	return err
+	if s.metadata.Known && !s.metadata.Text {
+		return nil
+	}
+	track.HasArtwork = track.HasArtwork && (!s.metadata.Known || s.metadata.Artwork)
+	m, err := s.ctrl.request("SET_PARAMETER", "", "application/x-dmap-tagged", trackDMAP(track), headers)
+	return optionalMetadataError(m, err)
 }
 
 var ErrArtworkTransport = errors.New("AirPlay artwork transport failed")
@@ -74,6 +106,17 @@ var ErrArtworkTransport = errors.New("AirPlay artwork transport failed")
 // Artwork sends image bytes over the encrypted control channel. Empty artwork
 // explicitly clears the previous cover on receivers supporting image/none.
 func (s *Session) Artwork(data []byte) error {
+	return s.artworkAt(data, s.stamp)
+}
+
+func (s *Session) ArtworkAt(data []byte, frame uint64) error {
+	return s.artworkAt(data, s.origin+uint32(frame))
+}
+
+func (s *Session) artworkAt(data []byte, stamp uint32) error {
+	if s.metadata.Known && !s.metadata.Artwork {
+		return nil
+	}
 	typ := "image/none"
 	if len(data) > 0 {
 		if len(data) > MaxArtworkBytes {
@@ -84,7 +127,7 @@ func (s *Session) Artwork(data []byte) error {
 			return errors.New("AirPlay artwork must be JPEG or PNG")
 		}
 	}
-	response, err := s.ctrl.request("SET_PARAMETER", "", typ, data, map[string]string{"RTP-Info": fmt.Sprintf("rtptime=%d", s.stamp)})
+	response, err := s.ctrl.request("SET_PARAMETER", "", typ, data, map[string]string{"RTP-Info": fmt.Sprintf("rtptime=%d", stamp)})
 	if err != nil && response.line == "" {
 		// A missing response leaves the control stream unusable, unlike a
 		// complete RTSP rejection of optional artwork.

@@ -27,7 +27,7 @@ func connectRAOP(ctx context.Context, device Device, id string, record bool) (*S
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{legacy: true, ctrl: c, done: make(chan struct{}), packets: map[uint16][]byte{}, lead: 2 * time.Second}
+	s := &Session{metadata: device.Metadata, legacy: true, ctrl: c, done: make(chan struct{}), packets: map[uint16][]byte{}, lead: 2 * time.Second}
 	ok := false
 	defer func() {
 		if !ok {

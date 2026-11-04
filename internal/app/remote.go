@@ -75,6 +75,7 @@ type Remote struct {
 	devices                    map[string]airplay.Device
 	discover                   func(context.Context) ([]airplay.Device, error)
 	connect                    func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error)
+	openPCM                    func(context.Context, Track, string, RemoteSaved) (io.Reader, func(), error)
 	cancel                     context.CancelFunc
 	session                    remoteSession
 	generation                 uint64
@@ -91,6 +92,7 @@ func NewRemote(a *App) (*Remote, error) {
 	r := &Remote{app: a, state: "stop", devices: map[string]airplay.Device{}, end: make(chan remoteEnd, 16), done: make(chan struct{}), saved: RemoteSaved{Volume: 50, Failure: "stop", Repeat: "off", Gain: "off", GainContext: "track", Protect: true}, discover: airplay.Discover}
 	r.pairingRequired = map[string]bool{}
 	r.readVolume = airplay.ReadVolume
+	r.openPCM = a.remotePCM
 	r.connect = func(ctx context.Context, d airplay.Device, id string, c *airplay.Credentials) (remoteSession, error) {
 		return airplay.Connect(ctx, d, id, c)
 	}
@@ -355,7 +357,7 @@ func (r *Remote) Status(w http.ResponseWriter, req *http.Request) {
 }
 func (r *Remote) start() error {
 	r.mu.Lock()
-	saved := r.saved
+	saved := cloneRemoteSaved(r.saved)
 	device, ok := r.devices[saved.Output]
 	cred, paired := r.identity.Credentials[saved.Output]
 	identity := r.identity.ID
@@ -403,6 +405,7 @@ func (r *Remote) start() error {
 			return
 		}
 		var listened time.Duration
+		queueHandled := false
 		playID := saved.PlaybackSession
 		counted := saved.Counted
 		skipArtwork := !r.app.config.AirPlayArtwork
@@ -415,10 +418,11 @@ func (r *Remote) start() error {
 			}
 		}
 		play := func() error {
-			pcm, release, e := r.app.remotePCM(ctx, track, path, saved)
+			pcm, release, e := r.openPCM(ctx, track, path, saved)
 			if e != nil {
 				return remoteTrackError{e}
 			}
+			release = sync.OnceFunc(release)
 			defer release()
 			var credentials *airplay.Credentials
 			if paired {
@@ -460,6 +464,10 @@ func (r *Remote) start() error {
 				r.volumePending = false
 				r.mu.Unlock()
 			}
+			if continuous, ok := session.(continuousSession); ok && pcmFrames(pcm) > 0 {
+				queueHandled = true
+				return r.streamQueue(ctx, continuous, pcm, release, track, saved, generation, skipArtwork)
+			}
 			r.prefetchNext(ctx, generation)
 			e = session.Stream(ctx, pcm, func(position time.Duration) {
 				listened = position
@@ -485,7 +493,7 @@ func (r *Remote) start() error {
 			return nil
 		}
 		err := play()
-		if (errors.Is(err, airplay.ErrSessionNotStarted) || errors.Is(err, airplay.ErrArtworkTransport)) && ctx.Err() == nil {
+		if (errors.Is(err, airplay.ErrSessionNotStarted) || (!queueHandled && errors.Is(err, airplay.ErrArtworkTransport))) && ctx.Err() == nil {
 			log.Printf("AirPlay output %s closed before audio started; reconnecting once: %v", device.ID, err)
 			timer := time.NewTimer(500 * time.Millisecond)
 			select {
@@ -496,14 +504,22 @@ func (r *Remote) start() error {
 			}
 			err = play()
 		}
-		if err == nil && !counted {
+		if err == nil && !counted && !queueHandled {
 			_ = r.app.store.RecordPlayed(track.ID, playID, saved.Listened+listened.Seconds(), true, saved.Seeked, time.Now())
 		}
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
-			log.Printf("AirPlay playback failed: output=%s address=%s track=%s position_ms=%d: %s", device.ID, device.Address, track.ID, saved.Position+int(listened.Milliseconds()), airplay.Diagnostic(err))
+			trackID, position := track.ID, saved.Position+int(listened.Milliseconds())
+			if queueHandled {
+				r.mu.Lock()
+				if r.saved.Index >= 0 && r.saved.Index < len(r.saved.Queue) {
+					trackID, position = r.saved.Queue[r.saved.Index], r.saved.Position
+				}
+				r.mu.Unlock()
+			}
+			log.Printf("AirPlay playback failed: output=%s address=%s track=%s position_ms=%d: %s", device.ID, device.Address, trackID, position, airplay.Diagnostic(err))
 		}
 		select {
 		case r.end <- remoteEnd{generation, err}:
@@ -882,6 +898,17 @@ func (r *Remote) command(b remoteCommand) error {
 		r.mu.Unlock()
 	default:
 		return errors.New("unknown remote command")
+	}
+	// Queue/policy edits invalidate already buffered successors. Restart at the
+	// audible position rather than letting a previously planned song leak through.
+	switch b.Action {
+	case "append", "move", "remove", "repeat", "shuffle", "timer":
+		r.mu.Lock()
+		_, continuous := r.session.(continuousSession)
+		r.mu.Unlock()
+		if playing && continuous {
+			return r.startWithPolicy()
+		}
 	}
 	return nil
 }

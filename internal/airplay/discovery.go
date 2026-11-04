@@ -13,16 +13,17 @@ import (
 )
 
 type Device struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Address           string `json:"address"`
-	Port              int    `json:"port"`
-	Features          uint64 `json:"-"`
-	RequiresAuth      bool   `json:"requires_auth"`
-	Selected          bool   `json:"selected"`
-	Type              string `json:"type"`
-	RSA               bool   `json:"-"`
-	UnsupportedReason string `json:"unsupported_reason,omitempty"`
+	ID                string          `json:"id"`
+	Name              string          `json:"name"`
+	Address           string          `json:"address"`
+	Port              int             `json:"port"`
+	Features          uint64          `json:"-"`
+	Metadata          MetadataSupport `json:"-"`
+	RequiresAuth      bool            `json:"requires_auth"`
+	Selected          bool            `json:"selected"`
+	Type              string          `json:"type"`
+	RSA               bool            `json:"-"`
+	UnsupportedReason string          `json:"unsupported_reason,omitempty"`
 }
 
 func featureBits(v string) uint64 {
@@ -348,7 +349,13 @@ func deviceID(value string) string {
 	return strings.Join(parts, ":")
 }
 func preferDevice(a, b Device) Device {
-	if (b.Type == "AirPlay 2" && a.Type != "AirPlay 2") || (a.UnsupportedReason != "" && b.UnsupportedReason == "") {
+	if (a.UnsupportedReason == "") != (b.UnsupportedReason == "") {
+		if b.UnsupportedReason == "" {
+			return b
+		}
+		return a
+	}
+	if b.Type == "AirPlay 2" && a.Type != "AirPlay 2" {
 		return b
 	}
 	return a
@@ -382,6 +389,7 @@ func devicesFromServices(services map[string]*discoveredService, hosts map[strin
 		d := Device{ID: id, Name: name, Address: address, Port: s.port, Features: features, Type: "AirPlay 2"}
 		if raop {
 			d.Type = "AirPlay 1"
+			d.Metadata = MetadataSupport{Known: true, Text: csvHas(s.txt["md"], "0"), Artwork: csvHas(s.txt["md"], "1"), Progress: csvHas(s.txt["md"], "2")}
 			switch {
 			case s.txt["cn"] != "" && !csvHas(s.txt["cn"], "1"):
 				d.UnsupportedReason = "Receiver does not support ALAC audio"
@@ -394,10 +402,11 @@ func devicesFromServices(services map[string]*discoveredService, hosts map[strin
 			case s.txt["et"] != "" && !csvHas(s.txt["et"], "0"):
 				d.UnsupportedReason = "Receiver requires unsupported FairPlay authentication"
 			}
-		} else if features&(1<<48|1<<38) == 0 {
+		} else if features&(1<<9) == 0 || features&(1<<48|1<<38) == 0 {
 			d.Type = "AirPlay"
 			d.UnsupportedReason = "Receiver does not advertise a supported audio transport"
 		} else {
+			d.Metadata = MetadataSupport{Known: true, Text: features&(1<<17) != 0, Artwork: features&(1<<15) != 0, Progress: features&(1<<16) != 0}
 			flags := featureBits(s.txt["flags"])
 			if flags == 0 {
 				flags = featureBits(s.txt["sf"])

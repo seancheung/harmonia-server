@@ -205,6 +205,10 @@ type structRW struct {
 
 var ErrPairingRequired = errors.New("AirPlay receiver requires PIN verification; open output settings to verify")
 
+type responseError struct{ status, message string }
+
+func (e *responseError) Error() string { return e.message }
+
 func (c *control) request(method, path, typ string, body []byte, headers map[string]string) (message, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -246,17 +250,20 @@ func (c *control) exchange(method, path, typ string, body []byte, headers map[st
 		return m, e
 	}
 	parts := strings.Fields(m.line)
+	if len(parts) < 2 || parts[0] != "RTSP/1.0" {
+		return m, errors.New("invalid RTSP response status")
+	}
+	if seq := m.header.Get("CSeq"); seq != "" && seq != strconv.Itoa(c.seq) {
+		return m, errors.New("RTSP sequence mismatch")
+	}
 	if c.legacy && len(parts) >= 2 && (parts[1] == "401" || parts[1] == "470") {
 		return m, errors.New("AirPlay 1 receiver requires authentication not supported by this sender")
 	}
 	if len(parts) >= 2 && (parts[1] == "401" || parts[1] == "470") {
 		return m, fmt.Errorf("%w: %s", ErrPairingRequired, m.line)
 	}
-	if len(parts) < 2 || parts[1] != "200" {
-		return m, fmt.Errorf("AirPlay %s %s: %s", method, path, m.line)
-	}
-	if seq := m.header.Get("CSeq"); seq != "" && seq != strconv.Itoa(c.seq) {
-		return m, errors.New("RTSP sequence mismatch")
+	if parts[1] != "200" {
+		return m, &responseError{parts[1], fmt.Sprintf("AirPlay %s %s: %s", method, path, m.line)}
 	}
 	return m, nil
 }
