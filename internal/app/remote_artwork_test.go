@@ -2,11 +2,15 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"github.com/harmonia/harmonia-server/internal/airplay"
 	"image"
 	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRemoteArtworkLifecycle(t *testing.T) {
@@ -53,4 +57,55 @@ func TestRemoteArtworkInvalidFile(t *testing.T) {
 	if _, err := remoteArtwork(filepath.Dir(path)); err == nil {
 		t.Fatal("accepted directory")
 	}
+}
+
+func TestRemoteArtworkDisconnectRetriesWithoutArtwork(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	calls := 0
+	a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
+		calls++
+		s := &testAirplaySession{done: make(chan struct{}), finish: make(chan struct{}), started: make(chan struct{})}
+		// After the first track, every new session rejects artwork.
+		// Recovery must omit even image/none.
+		if calls > 1 {
+			s.artworkError = airplay.ErrArtworkTransport
+		}
+		sessions <- s
+		return s, nil
+	}
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a", "b"}, "index": 0})
+	playing := awaitSession(t, sessions)
+	close(playing.finish) // Natural EOF advances to the second track.
+	first := <-sessions
+	select {
+	case <-first.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("broken session not closed")
+	}
+	select {
+	case <-first.started:
+		t.Fatal("streamed on broken connection")
+	default:
+	}
+	next := awaitSession(t, sessions)
+	if next.artworkCalls != 0 || next.metadata.HasArtwork {
+		t.Fatal("retry sent artwork")
+	}
+	remoteWait(t, a.remote, func() bool { return a.remote.state == "play" && a.remote.saved.Index == 1 })
+	a.remote.Close()
+	if calls != 3 {
+		t.Fatalf("connections = %d", calls)
+	}
+}
+
+func TestRemoteArtworkRejectionStillPlays(t *testing.T) {
+	a, sessions := remoteFixture(t)
+	a.remote.connect = func(context.Context, airplay.Device, string, *airplay.Credentials) (remoteSession, error) {
+		s := &testAirplaySession{artworkError: errors.New("RTSP 415 unsupported media"), done: make(chan struct{}), finish: make(chan struct{}), started: make(chan struct{})}
+		sessions <- s
+		return s, nil
+	}
+	remoteOK(t, a, map[string]any{"action": "start", "ids": []string{"a"}, "index": 0})
+	awaitSession(t, sessions)
+	remoteWait(t, a.remote, func() bool { return a.remote.state == "play" })
 }

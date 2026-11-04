@@ -3,6 +3,7 @@ package airplay
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -116,5 +117,33 @@ func TestArtworkWire(t *testing.T) {
 	}
 	if err := (&Session{}).Artwork(make([]byte, MaxArtworkBytes+1)); err == nil {
 		t.Fatal("accepted oversized artwork")
+	}
+}
+
+func TestArtworkTransportFailure(t *testing.T) {
+	for _, disconnect := range []bool{true, false} {
+		t.Run(fmt.Sprint(disconnect), func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			s := &Session{ctrl: &control{conn: client, rw: client, reader: bufio.NewReader(client)}}
+			done := make(chan error, 1)
+			go func() { done <- s.Artwork(nil) }()
+			if _, err := readMessage(bufio.NewReader(server)); err != nil {
+				t.Fatal(err)
+			}
+			if disconnect {
+				server.Close()
+			} else {
+				fmt.Fprint(server, "RTSP/1.0 415 Unsupported Media Type\r\nCSeq: 1\r\n\r\n")
+			}
+			err := <-done
+			if err == nil || errors.Is(err, ErrArtworkTransport) != disconnect {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if (s.err() != nil) != disconnect {
+				t.Fatalf("session failure: %v", s.err())
+			}
+		})
 	}
 }

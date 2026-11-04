@@ -69,6 +69,8 @@ func (s *Session) Metadata(track TrackMetadata) error {
 	return err
 }
 
+var ErrArtworkTransport = errors.New("AirPlay artwork transport failed")
+
 // Artwork sends image bytes over the encrypted control channel. Empty artwork
 // explicitly clears the previous cover on receivers supporting image/none.
 func (s *Session) Artwork(data []byte) error {
@@ -82,7 +84,13 @@ func (s *Session) Artwork(data []byte) error {
 			return errors.New("AirPlay artwork must be JPEG or PNG")
 		}
 	}
-	_, err := s.ctrl.request("SET_PARAMETER", "", typ, data, map[string]string{"RTP-Info": fmt.Sprintf("rtptime=%d", s.stamp)})
+	response, err := s.ctrl.request("SET_PARAMETER", "", typ, data, map[string]string{"RTP-Info": fmt.Sprintf("rtptime=%d", s.stamp)})
+	if err != nil && response.line == "" {
+		// A missing response leaves the control stream unusable, unlike a
+		// complete RTSP rejection of optional artwork.
+		s.fail(err)
+		return fmt.Errorf("%w: %w", ErrArtworkTransport, err)
+	}
 	return err
 }
 

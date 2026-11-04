@@ -22,6 +22,8 @@ import (
 
 type testAirplaySession struct {
 	streamError           error
+	artworkError          error
+	artworkCalls          int
 	artwork               []byte
 	metadata              airplay.TrackMetadata
 	volumeWrites          []int
@@ -37,8 +39,9 @@ func (s *testAirplaySession) Volume(v int) error {
 }
 func (s *testAirplaySession) Metadata(m airplay.TrackMetadata) error { s.metadata = m; return nil }
 func (s *testAirplaySession) Artwork(b []byte) error {
+	s.artworkCalls++
 	s.artwork = append([]byte(nil), b...)
-	return nil
+	return s.artworkError
 }
 func (s *testAirplaySession) Stream(ctx context.Context, reader io.Reader, progress func(time.Duration)) error {
 	if s.streamError != nil {

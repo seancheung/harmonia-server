@@ -405,6 +405,11 @@ func (r *Remote) start() error {
 		var listened time.Duration
 		playID := saved.PlaybackSession
 		counted := saved.Counted
+		artwork, artworkErr := remoteArtwork(track.Cover)
+		if artworkErr != nil {
+			log.Printf("AirPlay artwork for track %s: %v", track.ID, artworkErr)
+		}
+		skipArtwork := false
 		play := func() error {
 			pcm, release, e := r.app.remotePCM(ctx, track, path, saved)
 			if e != nil {
@@ -431,15 +436,17 @@ func (r *Remote) start() error {
 			volume := r.saved.Volume
 			setVolume := r.volumePending
 			r.mu.Unlock()
-			artwork, artworkErr := remoteArtwork(track.Cover)
-			if artworkErr != nil {
-				log.Printf("AirPlay artwork for track %s: %v", track.ID, artworkErr)
-			}
-			if e = session.Metadata(airplay.TrackMetadata{HasArtwork: len(artwork) > 0, ID: track.ID, Title: track.Title, Artist: track.Artist, Album: track.Album, AlbumArtist: track.AlbumArtist, Number: track.Number, Disc: track.Disc, Duration: time.Duration(track.Duration * float64(time.Second)), Position: time.Duration(saved.Position) * time.Millisecond}); e != nil {
+			if e = session.Metadata(airplay.TrackMetadata{HasArtwork: !skipArtwork && len(artwork) > 0, ID: track.ID, Title: track.Title, Artist: track.Artist, Album: track.Album, AlbumArtist: track.AlbumArtist, Number: track.Number, Disc: track.Disc, Duration: time.Duration(track.Duration * float64(time.Second)), Position: time.Duration(saved.Position) * time.Millisecond}); e != nil {
 				return e
 			}
-			if artworkErr = session.Artwork(artwork); artworkErr != nil {
-				log.Printf("AirPlay artwork for track %s was not accepted: %v", track.ID, artworkErr)
+			if !skipArtwork {
+				if artworkErr := session.Artwork(artwork); artworkErr != nil {
+					log.Printf("AirPlay artwork for track %s was not accepted: %v", track.ID, artworkErr)
+					if errors.Is(artworkErr, airplay.ErrArtworkTransport) {
+						skipArtwork = true
+						return artworkErr
+					}
+				}
 			}
 			if setVolume {
 				if e = session.Volume(volume); e != nil {
@@ -474,7 +481,7 @@ func (r *Remote) start() error {
 			return nil
 		}
 		err := play()
-		if errors.Is(err, airplay.ErrSessionNotStarted) && ctx.Err() == nil {
+		if (errors.Is(err, airplay.ErrSessionNotStarted) || errors.Is(err, airplay.ErrArtworkTransport)) && ctx.Err() == nil {
 			log.Printf("AirPlay output %s closed before audio started; reconnecting once: %v", device.ID, err)
 			timer := time.NewTimer(500 * time.Millisecond)
 			select {
