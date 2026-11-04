@@ -64,3 +64,16 @@ func TestNTPDoesNotAdvanceWithoutTiming(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPTPStartupAcceptsSpacedDelayProbes(t *testing.T) {
+	// A recent successful reply remains valid while the clock settles, even
+	// when delay requests are spaced more than one second apart.
+	c := &clockServer{ptp: true}
+	c.lastProbe.Store(time.Now().Add(-1500 * time.Millisecond).UnixNano())
+	s := &Session{clock: c}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if err := s.waitForClock(ctx); err != nil {
+		t.Fatalf("fresh PTP exchange rejected: %v", err)
+	}
+}

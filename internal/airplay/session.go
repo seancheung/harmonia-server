@@ -183,7 +183,15 @@ func (s *Session) fail(e error) {
 	}
 	s.mu.Unlock()
 }
-func (s *Session) err() error { s.mu.Lock(); defer s.mu.Unlock(); return s.failure }
+func (s *Session) err() error {
+	s.mu.Lock()
+	err := s.failure
+	s.mu.Unlock()
+	if err == nil && s.clock != nil {
+		err = s.clock.err()
+	}
+	return err
+}
 func (s *Session) events() {
 	defer s.wg.Done()
 	wire := newSecure(s.event, s.secret, true)
@@ -293,6 +301,17 @@ func (s *Session) syncAudio(stamp uint32, at time.Time, first bool) error {
 	return e
 }
 
+const ptpProbeTimeout = 5 * time.Second
+
+func (s *Session) clockTimeout(message string) error {
+	last := s.clock.lastProbe.Load()
+	status := "no successful timing replies"
+	if last != 0 {
+		status = fmt.Sprintf("last successful timing reply %s ago", time.Since(time.Unix(0, last)).Round(time.Millisecond))
+	}
+	return &timingError{message: message, detail: fmt.Sprintf("local=%s receiver=%s clock=%016x; %s", s.clock.event.LocalAddr(), s.clock.peer, s.clock.id, status)}
+}
+
 func (s *Session) waitForClock(ctx context.Context) error {
 	deadline := time.NewTimer(8 * time.Second)
 	defer deadline.Stop()
@@ -304,7 +323,9 @@ func (s *Session) waitForClock(ctx context.Context) error {
 			return err
 		}
 		last := s.clock.lastProbe.Load()
-		if last != 0 && (!s.clock.ptp || time.Since(time.Unix(0, last)) < time.Second) {
+		// Delay probes need not arrive every second. Apply the same freshness
+		// window during startup and streaming, while allowing PTP to settle.
+		if last != 0 && (!s.clock.ptp || time.Since(time.Unix(0, last)) < ptpProbeTimeout) {
 			if firstProbe.IsZero() {
 				firstProbe = time.Now()
 			}
@@ -319,7 +340,7 @@ func (s *Session) waitForClock(ctx context.Context) error {
 			return ctx.Err()
 		case <-deadline.C:
 			if s.clock.ptp {
-				return errors.New("receiver did not synchronize with AirPlay PTP clock (UDP 319/320)")
+				return s.clockTimeout("receiver did not synchronize with AirPlay PTP clock (UDP 319/320)")
 			}
 			return errors.New("receiver accepted AirPlay NTP setup but sent no timing requests; audio playback has not started")
 		case <-tick.C:
@@ -352,8 +373,8 @@ func (s *Session) Stream(ctx context.Context, pcm io.Reader, progress func(time.
 		if e := s.err(); e != nil {
 			return e
 		}
-		if s.clock.ptp && time.Since(time.Unix(0, s.clock.lastProbe.Load())) > 5*time.Second {
-			return errors.New("AirPlay PTP timing exchanges stopped")
+		if s.clock.ptp && time.Since(time.Unix(0, s.clock.lastProbe.Load())) > ptpProbeTimeout {
+			return s.clockTimeout("AirPlay PTP timing exchanges stopped")
 		}
 		n, e := io.ReadFull(pcm, buf)
 		if e != nil && e != io.EOF && e != io.ErrUnexpectedEOF {

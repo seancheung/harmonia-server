@@ -502,6 +502,9 @@ func (r *Remote) start() error {
 		if ctx.Err() != nil {
 			return
 		}
+		if err != nil {
+			log.Printf("AirPlay playback failed: output=%s address=%s track=%s position_ms=%d: %s", device.ID, device.Address, track.ID, saved.Position+int(listened.Milliseconds()), airplay.Diagnostic(err))
+		}
 		select {
 		case r.end <- remoteEnd{generation, err}:
 		case <-r.done:

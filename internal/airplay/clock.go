@@ -20,6 +20,55 @@ type clockServer struct {
 	done           chan struct{}
 	wg             sync.WaitGroup
 	lastProbe      atomic.Int64
+	mu             sync.Mutex
+	failure        error
+}
+
+// timingError keeps transport diagnostics out of client-facing error strings.
+type timingError struct {
+	message string
+	detail  string
+	cause   error
+}
+
+func (e *timingError) Error() string { return e.message }
+func (e *timingError) Unwrap() error { return e.cause }
+
+// Diagnostic returns error details intended only for server logs.
+func Diagnostic(err error) string {
+	var timing *timingError
+	if errors.As(err, &timing) {
+		return fmt.Sprintf("%v: %s", err, timing.detail)
+	}
+	return fmt.Sprint(err)
+}
+
+func (c *clockServer) recordError(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failure == nil {
+		c.failure = &timingError{message: "AirPlay timing transport failed", detail: err.Error(), cause: err}
+	}
+}
+
+func (c *clockServer) err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.failure
+}
+
+func (c *clockServer) send(socket *net.UDPConn, packet []byte, destination *net.UDPAddr) bool {
+	_, err := socket.WriteToUDP(packet, destination)
+	c.recordError(err)
+	return err == nil
 }
 
 func startClock(local, peer net.IP, id uint64, ptp bool) (*clockServer, error) {
@@ -103,6 +152,7 @@ func (c *clockServer) receive(socket *net.UDPConn) {
 	for {
 		n, addr, e := socket.ReadFromUDP(buf)
 		if e != nil {
+			c.recordError(e)
 			return
 		}
 		if !addr.IP.Equal(c.peer) {
@@ -121,8 +171,9 @@ func (c *clockServer) receive(socket *net.UDPConn) {
 			copy(out[8:16], b[24:32])
 			binary.BigEndian.PutUint64(out[16:], ntp(now))
 			binary.BigEndian.PutUint64(out[24:], ntp(time.Now()))
-			_, _ = socket.WriteToUDP(out, addr)
-			c.lastProbe.Store(now.UnixNano())
+			if c.send(socket, out, addr) {
+				c.lastProbe.Store(now.UnixNano())
+			}
 			continue
 		}
 		if n < 34 || b[1]&15 != 2 || int(binary.BigEndian.Uint16(b[2:])) > n {
@@ -132,7 +183,6 @@ func (c *clockServer) receive(socket *net.UDPConn) {
 		kind := b[0] & 15
 		switch kind {
 		case 1, 2:
-			c.lastProbe.Store(now.UnixNano())
 			reply := byte(9)
 			target := c.general
 			dest := &net.UDPAddr{IP: c.peer, Port: 320}
@@ -147,13 +197,18 @@ func (c *clockServer) receive(socket *net.UDPConn) {
 			}
 			ptpTime(out[34:], now)
 			copy(out[44:], b[20:30])
-			_, _ = target.WriteToUDP(out, dest)
+			if !c.send(target, out, dest) {
+				continue
+			}
 			if kind == 2 {
 				out = c.header(10, 54, seq)
 				ptpTime(out[34:], time.Now())
 				copy(out[44:], b[20:30])
-				_, _ = c.general.WriteToUDP(out, &net.UDPAddr{IP: c.peer, Port: 320})
+				if !c.send(c.general, out, &net.UDPAddr{IP: c.peer, Port: 320}) {
+					continue
+				}
 			}
+			c.lastProbe.Store(now.UnixNano())
 		case 12:
 			if n < 44 {
 				continue
@@ -171,7 +226,7 @@ func (c *clockServer) receive(socket *net.UDPConn) {
 					binary.BigEndian.PutUint16(out[46:], 8)
 					copy(out[48:54], b[p+4:p+10])
 					out[55] = 1
-					_, _ = c.general.WriteToUDP(out, &net.UDPAddr{IP: c.peer, Port: 320})
+					c.send(c.general, out, &net.UDPAddr{IP: c.peer, Port: 320})
 				}
 				p += 4 + l
 			}
@@ -199,14 +254,14 @@ func (c *clockServer) announce() {
 				b[52] = 128
 				binary.BigEndian.PutUint64(b[53:], c.id)
 				b[63] = 0x20
-				_, _ = c.general.WriteToUDP(b, &net.UDPAddr{IP: c.peer, Port: 320})
+				c.send(c.general, b, &net.UDPAddr{IP: c.peer, Port: 320})
 			}
 			b := c.header(0, 44, seq)
 			b[6] |= 2
 			b[32] = 0
 			b[33] = 0xfd
 			now := time.Now()
-			_, _ = c.event.WriteToUDP(b, &net.UDPAddr{IP: c.peer, Port: 319})
+			c.send(c.event, b, &net.UDPAddr{IP: c.peer, Port: 319})
 			b = c.header(8, 76, seq)
 			b[32] = 2
 			b[33] = 0xfd
@@ -214,7 +269,7 @@ func (c *clockServer) announce() {
 			binary.BigEndian.PutUint16(b[44:], 3)
 			binary.BigEndian.PutUint16(b[46:], 28)
 			copy(b[48:54], []byte{0, 0x80, 0xc2, 0, 0, 1})
-			_, _ = c.general.WriteToUDP(b, &net.UDPAddr{IP: c.peer, Port: 320})
+			c.send(c.general, b, &net.UDPAddr{IP: c.peer, Port: 320})
 		}
 	}
 }

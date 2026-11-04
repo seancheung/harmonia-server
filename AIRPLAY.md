@@ -75,6 +75,15 @@ performs the transient handshake, event acknowledgement, timing and retransmit.
 The loopback receiver is a protocol fixture, not evidence of hardware support.
 Fuzz targets cover binary plist and DNS message parsing.
 
+Playback failures are logged as `AirPlay playback failed` with output, receiver
+address, track and position. Timing socket errors retain the underlying UDP
+error; PTP timeouts include the local endpoint, clock identity and age of the
+last successfully answered delay probe (or indicate that none was answered).
+These details appear only in server logs; clients receive a short error message.
+For Compose deployments, collect `docker compose logs --since 10m server`
+after a failure. This distinguishes socket failures from missing peer traffic;
+a successful timing reply still does not prove that the receiver rendered audio.
+
 Before treating this sender as production-ready, run it on the receiver LAN:
 
 1. Discover the output and verify its advertised address, port and capabilities.
